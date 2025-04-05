@@ -130,6 +130,8 @@ impl ObjObject {
     /// Returns:
     ///     - a [Vec][std::vec::Vec] containing 3 vertices for each face. Vertices that are shared are duplicated. Every 3 vertices build a face.
     ///     - a [Vec][std::vec::Vec] containing [`MaterialIdent`]. Each returned vertex contains a `material_index` that can be used to index into this list, to retrive the [`MaterialIdent`].
+    /// This ignores any grouping done via objects (o) or groups (g).
+    /// If keeping these groupings is important, consider iterating manually over each object/group/face.
     pub fn vertices(&self) -> (Vec<VertexTextureData>, Vec<MaterialIdent>) {
         let mut vertices = Vec::with_capacity(self.vert_count());
         let mut materials = Vec::<MaterialIdent>::new();
@@ -166,6 +168,8 @@ impl ObjObject {
     ///     - a [Vec][std::vec::Vec] containing each unqiue vertex.
     ///     - a [Vec][std::vec::Vec] containing indicies into the vertex buffer. Every 3 indicies build a face.
     ///     - a [Vec][std::vec::Vec] containing [`MaterialIdent`]. Each returned vertex contains a `material_index` that can be used to index into this list, to retrive the [`MaterialIdent`].
+    /// This ignores any grouping done via objects (o) or groups (g).
+    /// If keeping these groupings is important, consider iterating manually over each object/group/face.
     pub fn vertices_indexed(&self) -> (Vec<usize>, Vec<VertexTextureData>, Vec<MaterialIdent>) {
         let mut vertices = HashMap::<VertexDataComp, usize, _>::with_capacity_and_hasher(
             self.vert_count(),

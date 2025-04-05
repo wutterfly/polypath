@@ -11,7 +11,11 @@ Allows to read in *.obj* files, extraxt vertices or iterate over contained *obje
 
 # Example
 
+Manually iterating over each *object*, *group* and *face*.
+
 ```rust
+use polypath::ObjObject;
+
 fn main() {
     let start = std::time::Instant::now();
 
@@ -54,6 +58,39 @@ fn main() {
 
 ```
 
+
+Directly get vertices, but loosing any grouping done via *objecs* or *groups*.
+
+```rust
+use polypath::ObjObject;
+
+fn main() {
+    let start = std::time::Instant::now();
+
+    // read .obj file
+    // automatic triangulates faces (from max 4 vertices per face)
+    let obj = ObjObject::read_from_file(mesh).unwrap();
+    println!(
+        "[{mesh}] took [{}ms] with [{} vertices]",
+        start.elapsed().as_millis(),
+        obj.vert_count()
+    );
+
+    // extract all the vertices (position, ?color, ?normal, ?texture coord, ?material index)
+    // and all materials that are used (accessed by material index)
+    // as for each face the possible same vertex is included, this can be rather inefficient
+    // every 3 vertices are 1 face
+    let (verts, _) = obj.vertices();
+    println!("verts: {}", verts.len());
+
+    // extract all the vertices (position, ?color, ?normal, ?texture coord, ?material index)
+    // and all materials that are used (accessed by material index)
+    // constructs an index buffer, deduplicating the raw vertices
+    let (indicies, verts, _) = obj.vertices_indexed();
+    println!("indicies: {}  --  verts: {}", indicies.len(), verts.len());
+}
+```
+
 # Missing features:
 
 - smooth shading
@@ -66,7 +103,7 @@ fn main() {
 - vertices ("v )
   + colors
 - vertex normals ("vn ")
-- vertex texture coords ("vn ")
+- vertex texture coords ("vt ")
 - objects ("o ")
 - groups ("g ")
 - faces ("f ")
