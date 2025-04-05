@@ -34,22 +34,22 @@ impl ObjObject {
     }
 
     #[inline]
-    pub const fn object_count(&self) -> usize {
+    pub fn object_count(&self) -> usize {
         self.objects.len()
     }
 
     #[inline]
-    pub const fn group_count(&self) -> usize {
+    pub fn group_count(&self) -> usize {
         self.groups.len()
     }
 
     #[inline]
-    pub const fn face_count(&self) -> usize {
+    pub fn face_count(&self) -> usize {
         self.faces.len()
     }
 
     #[inline]
-    pub const fn vert_count(&self) -> usize {
+    pub fn vert_count(&self) -> usize {
         self.faces.len() * 3
     }
 

@@ -1,3 +1,5 @@
+![example workflow](https://github.com/wutterfly/polypath/actions/workflows/rust.yml/badge.svg)
+
 # Polypath
 
 "A very basic file parser for .obj and .mtl files."
