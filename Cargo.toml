@@ -1,0 +1,33 @@
+[package]
+name = "polypath"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+keywords = [".obj", "mesh loader"]
+categories = ["graphics", "parsing", "parser-implementations"]
+repository = "https://github.com/wutterfly/polypath.git"
+description = "A very basic file parser for .obj and .mtl files."
+exclude = [
+    "examples/*",
+    "tests/*",
+    "benches/*",
+]
+
+[dependencies]
+rustc-hash = "2.1.1"
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+
+
+[[bench]]
+name = "parse"
+harness = false
+
+
+[[bench]]
+name = "read"
+harness = false
+
+
