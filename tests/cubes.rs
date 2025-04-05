@@ -55,7 +55,7 @@ fn test_cube() {
 
             assert_eq!(g.face_count(), 12);
             for (i, f) in g.faces_iter().enumerate() {
-                let [v1, v2, v3] = f.verticies();
+                let [v1, v2, v3] = f.vertices();
 
                 let [s1, s2, s3] = VERT_POS[i];
 

@@ -11,17 +11,17 @@ fn main() {
         let start = std::time::Instant::now();
 
         // read .obj file
-        // automatic triangulates faces (from max 4 verticies per face)
+        // automatic triangulates faces (from max 4 vertices per face)
         let obj = ObjObject::read_from_file(mesh).unwrap();
         println!(
-            "[{mesh}] took [{}ms] with [{} verticies]",
+            "[{mesh}] took [{}ms] with [{} vertices]",
             start.elapsed().as_millis(),
             obj.vert_count()
         );
 
         // an .obj file can contain multiple objects
         // this library interprets .obj with the following hirachy:
-        // .obj file -> [objects] -> [groups] -> [faces] -> [verticies]
+        // .obj file -> [objects] -> [groups] -> [faces] -> [vertices]
         // iterate over all contained objects
         for o in obj.objects_iter() {
             println!("Object name: {}", o.name());
@@ -34,8 +34,8 @@ fn main() {
 
                 // each group can contain multiple faces
                 for f in g.faces_iter() {
-                    // extract set of 3 verticies from each face
-                    let [v1, v2, v3] = f.verticies();
+                    // extract set of 3 vertices from each face
+                    let [v1, v2, v3] = f.vertices();
 
                     println!("Positions: ");
                     println!("{:?}", v1.position);

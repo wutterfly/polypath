@@ -4,12 +4,16 @@
 mod obj;
 mod parse;
 
+pub use obj::Face;
+pub use obj::MaterialIdent;
 pub use obj::ObjObject;
+pub use obj::VertexData;
 pub use obj::VertexTextureData;
 
 use std::num::{ParseFloatError, ParseIntError};
 
 #[derive(Debug)]
+/// Represents different kind of errors that can happen while reading and parsing a .obj object.
 pub enum Error {
     Io(std::io::Error),
     UnkownLine(String),
@@ -19,7 +23,6 @@ pub enum Error {
     EmptyMtl,
     OjectMultipleMtl(String),
     GroupMultipleMTl(String),
-
     NonUniformColors,
 }
 
@@ -41,7 +44,7 @@ impl std::fmt::Display for Error {
             Self::NonUniformColors => {
                 writeln!(
                     f,
-                    "Vertex colors are specified for some verticies, but not all"
+                    "Vertex colors are specified for some vertices, but not all"
                 )
             }
         }

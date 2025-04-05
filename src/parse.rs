@@ -6,7 +6,7 @@ impl ObjObject {
     pub fn parse(mut reader: impl std::io::BufRead) -> Result<Self, Error> {
         let mut buffer = String::with_capacity(256);
 
-        let mut verticies = Vec::with_capacity(64);
+        let mut vertices = Vec::with_capacity(64);
         let mut vertex_colors = Vec::new();
         let mut vertex_normals = Vec::new();
         let mut texture_coords = Vec::new();
@@ -25,7 +25,7 @@ impl ObjObject {
                 break;
             }
 
-            let v_count = verticies.len() as u32;
+            let v_count = vertices.len() as u32;
             let t_count = texture_coords.len() as u32;
             let n_count = vertex_normals.len() as u32;
 
@@ -35,7 +35,7 @@ impl ObjObject {
             match line {
                 Line::Empty | Line::Comment => continue,
                 Line::Vertex(vertex_data) => {
-                    verticies.push(vertex_data.position);
+                    vertices.push(vertex_data.position);
                     if let Some(color) = vertex_data.color {
                         vertex_colors.push(color);
                     }
@@ -119,7 +119,7 @@ impl ObjObject {
         }
 
         Ok(Self {
-            verticies,
+            vertices,
             vertex_colors,
             vertex_normals,
             texture_coords,

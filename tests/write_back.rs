@@ -22,19 +22,19 @@ fn main() {
 
         let obj = ObjObject::read_from_file(mesh).unwrap();
         println!(
-            "[{mesh}] took [{}ms] with [{} verticies]",
+            "[{mesh}] took [{}ms] with [{} vertices]",
             start.elapsed().as_millis(),
             obj.vert_count()
         );
 
         _object_to_file(&obj);
 
-        let (verts, _) = obj.verticies();
+        let (verts, _) = obj.vertices();
         println!("verts: {}", verts.len());
 
         _vertex_to_file(verts);
 
-        let (indicies, verts, _) = obj.verticies_indexed();
+        let (indicies, verts, _) = obj.vertices_indexed();
         println!("indicies: {}  --  verts: {}", indicies.len(), verts.len());
 
         write_indexed_to_file(verts, indicies);
@@ -154,7 +154,7 @@ fn _object_to_file(obj: &ObjObject) {
             for f in g.faces_iter() {
                 let mut normals = false;
 
-                for v in f.verticies() {
+                for v in f.vertices() {
                     let (p1, p2, p3) = v.position;
                     _ = writeln!(&mut str, "v {p1} {p2} {p3}");
 

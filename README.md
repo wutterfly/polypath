@@ -5,7 +5,7 @@
 "A very basic file parser for .obj and .mtl files."
 
 
-Allows to read in *.obj* files, extraxt verticies or iterate over contained *objects*, *groups*, *faces* and verticies.
+Allows to read in *.obj* files, extraxt vertices or iterate over contained *objects*, *groups*, *faces* and vertices.
 
 
 
@@ -18,14 +18,14 @@ Allows to read in *.obj* files, extraxt verticies or iterate over contained *obj
 
 
 # Supported .obj Features
-- verticies ("v )
+- vertices ("v )
   + colors
 - vertex normals ("vn ")
 - vertex texture coords ("vn ")
 - objects ("o ")
 - groups ("g ")
 - faces ("f ")
-  - max 4 verticies per face
+  - max 4 vertices per face
 - comments ("# ")
   - get ignored
 - material library ("mtllib ")

@@ -13,8 +13,53 @@ use crate::{
 };
 
 #[derive(Debug)]
+/// A representation of a .obj file.
+///
+/// This library interprets the .obj format with the following hierarchy:
+///
+/// A single .obj file can contain multiple objects (o).
+/// If there are no explicit objects contained in the file, a unnamed object for the whole file is assumed.
+///
+/// Every object (o) can contain multiple groups (g).
+/// If there are no explicit groups contained in the object, a unnamed group for the whole object (o) is assumed.
+///
+/// Every group (g) can contain multiple faces (f).
+///
+/// And each face (f) contains 3 vertices. If more then 3 vertices are specified for any face (f), they are automatically triangularized.
+/// A maximum of 4 vertices in a face can be triangularized.
+///
+/// # Example
+/// ```rust
+/// # use polypath::ObjObject;
+/// let mesh = "./meshes/cubes.obj";
+/// let obj = ObjObject::read_from_file(mesh).unwrap();
+///
+/// // read .obj file
+/// // automatic triangulates faces (from max 4 vertices per face)
+/// for o in obj.objects_iter() {
+///     println!("Object name: {}", o.name());
+///     println!("Object material: {:?}", o.mtllib());
+///
+///     // an .obj file can contain multiple groups
+///     for g in o.group_iter() {
+///         println!("Group name: {}", g.name());
+///         println!("Group material: {:?}", g.mtluse());
+///
+///         // each group can contain multiple faces
+///         for f in g.faces_iter() {
+///             // extract set of 3 vertices from each face
+///            let [v1, v2, v3] = f.vertices();
+///
+///             println!("Positions: ");
+///             println!("{:?}", v1.position);
+///             println!("{:?}", v2.position);
+///             println!("{:?}", v3.position);
+///         }
+///     }
+/// }
+/// ```
 pub struct ObjObject {
-    pub(crate) verticies: Vec<(f32, f32, f32)>,
+    pub(crate) vertices: Vec<(f32, f32, f32)>,
     pub(crate) vertex_colors: Vec<(f32, f32, f32)>,
     pub(crate) vertex_normals: Vec<(f32, f32, f32)>,
     pub(crate) texture_coords: Vec<(f32, f32)>,
@@ -26,6 +71,11 @@ pub struct ObjObject {
 }
 
 impl ObjObject {
+    /// Reads a .obj file and returns a ObjObject.
+    ///
+    /// # Error
+    /// - Returns an [Error][std::io::Error] if reading from file fails
+    /// - Returns other errors encountered when parsing the file
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let file = File::open(path)?;
         let buffer = BufReader::new(file);
@@ -34,28 +84,36 @@ impl ObjObject {
     }
 
     #[inline]
+    /// Returns the number of individual objects contained in the .obj file.
     pub fn object_count(&self) -> usize {
         self.objects.len()
     }
 
     #[inline]
+    /// Returns the number of individual groups contained in the .obj file.
     pub fn group_count(&self) -> usize {
         self.groups.len()
     }
 
     #[inline]
+    /// Returns the number of individual faces contained in the .obj file.
     pub fn face_count(&self) -> usize {
         self.faces.len()
     }
 
     #[inline]
+    /// Returns the raw number of individual verticies contained in the .obj file.
+    ///
+    /// This function is not 100% prezise, as it just calculates 3 verticices for each face.
+    /// Vertices that are shared are not considered.
     pub fn vert_count(&self) -> usize {
         self.faces.len() * 3
     }
 
+    /// Returns an [Iterator][std::iter::Iterator] over each object.
     pub fn objects_iter(&self) -> impl Iterator<Item = ObjectRef> {
         self.objects.iter().map(|obj| ObjectRef {
-            verticies: &self.verticies,
+            vertices: &self.vertices,
             vertex_colors: vec_to_option(&self.vertex_colors),
             vertex_normals: &self.vertex_normals,
             texture_coords: &self.texture_coords,
@@ -69,9 +127,12 @@ impl ObjObject {
         })
     }
 
-    pub fn verticies(&self) -> (Vec<VertexTextureData>, Vec<TextureIdent>) {
-        let mut verticies = Vec::with_capacity(self.vert_count());
-        let mut materials = Vec::<TextureIdent>::new();
+    /// Returns:
+    ///     - a [Vec][std::vec::Vec] containing 3 vertices for each face. Vertices that are shared are duplicated. Every 3 vertices build a face.
+    ///     - a [Vec][std::vec::Vec] containing [`MaterialIdent`]. Each returned vertex contains a `material_index` that can be used to index into this list, to retrive the [`MaterialIdent`].
+    pub fn vertices(&self) -> (Vec<VertexTextureData>, Vec<MaterialIdent>) {
+        let mut vertices = Vec::with_capacity(self.vert_count());
+        let mut materials = Vec::<MaterialIdent>::new();
 
         for obj in self.objects_iter() {
             let mtllib = obj.mtllib.map(String::as_str);
@@ -79,62 +140,66 @@ impl ObjObject {
             for group in obj.group_iter() {
                 let mtluse = group.mtluse.map(String::as_str);
 
-                let t = TextureIdent { mtllib, mtluse };
+                let t = MaterialIdent { mtllib, mtluse };
                 let texture_index = materials.iter().position(|m| *m == t).unwrap_or_else(|| {
                     materials.push(t);
                     materials.len() - 1
                 });
 
                 for f in group.faces_iter() {
-                    for v in f.verticies() {
+                    for v in f.vertices() {
                         let vert = VertexTextureData {
                             material_index: texture_index,
                             vertex: v,
                         };
 
-                        verticies.push(vert);
+                        vertices.push(vert);
                     }
                 }
             }
         }
 
-        (verticies, materials)
+        (vertices, materials)
     }
 
-    pub fn verticies_indexed(&self) -> (Vec<usize>, Vec<VertexTextureData>, Vec<TextureIdent>) {
-        let mut verticies = HashMap::<VertexDataComp, usize, _>::with_capacity_and_hasher(
+    /// Returns:
+    ///     - a [Vec][std::vec::Vec] containing each unqiue vertex.
+    ///     - a [Vec][std::vec::Vec] containing indicies into the vertex buffer. Every 3 indicies build a face.
+    ///     - a [Vec][std::vec::Vec] containing [`MaterialIdent`]. Each returned vertex contains a `material_index` that can be used to index into this list, to retrive the [`MaterialIdent`].
+    pub fn vertices_indexed(&self) -> (Vec<usize>, Vec<VertexTextureData>, Vec<MaterialIdent>) {
+        let mut vertices = HashMap::<VertexDataComp, usize, _>::with_capacity_and_hasher(
             self.vert_count(),
             FxBuildHasher,
         );
         let mut indicies = Vec::with_capacity(self.vert_count());
-        let mut materials = vec![TextureIdent {
+        let mut materials = vec![MaterialIdent {
             mtllib: None,
             mtluse: None,
         }];
         let mut counter = 0;
 
         // generate materials vector
-        // and deduplicate verticies
+        // and deduplicate vertices
         for obj in self.objects_iter() {
             let mtllib = obj.mtllib.map(String::as_str);
 
             for group in obj.group_iter() {
                 let mtluse = group.mtluse.map(String::as_str);
 
-                let t = TextureIdent { mtllib, mtluse };
+                let t = MaterialIdent { mtllib, mtluse };
                 let texture_index = materials.iter().position(|m| *m == t).unwrap_or_else(|| {
                     materials.push(t);
                     materials.len() - 1
                 });
 
                 for f in group.faces_iter() {
-                    for v in f.verticies() {
+                    for v in f.vertices() {
                         let vert = VertexTextureData {
                             material_index: texture_index,
                             vertex: v,
                         };
 
-                        match verticies.entry(VertexDataComp::from(vert)) {
+                        match vertices.entry(VertexDataComp::from(vert)) {
                             Entry::Occupied(occupied_entry) => indicies.push(*occupied_entry.get()),
                             Entry::Vacant(vacant_entry) => {
                                 vacant_entry.insert(counter);
@@ -143,19 +208,19 @@ impl ObjObject {
                             }
                         }
 
-                        debug_assert!(verticies.contains_key(&VertexDataComp::from(vert)));
+                        debug_assert!(vertices.contains_key(&VertexDataComp::from(vert)));
                     }
                 }
             }
         }
 
         // arrange vertex buffer
-        let mut vertex_buffer = Vec::with_capacity(verticies.len());
-        vertex_buffer.resize(verticies.len(), VertexTextureData::default());
+        let mut vertex_buffer = Vec::with_capacity(vertices.len());
+        vertex_buffer.resize(vertices.len(), VertexTextureData::default());
 
-        assert_eq!(counter, verticies.len());
+        assert_eq!(counter, vertices.len());
 
-        for (vert, pos) in verticies {
+        for (vert, pos) in vertices {
             vertex_buffer[pos] = VertexTextureData::from(vert);
         }
 
@@ -164,14 +229,19 @@ impl ObjObject {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextureIdent<'a> {
+/// Identifies a material.
+///
+/// Consists of
+/// - a material library (mtllib)
+/// - a material use (mtluse)
+pub struct MaterialIdent<'a> {
     pub mtllib: Option<&'a str>,
     pub mtluse: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectRef<'a> {
-    verticies: &'a [(f32, f32, f32)],
+    vertices: &'a [(f32, f32, f32)],
     vertex_colors: Option<&'a [(f32, f32, f32)]>,
     vertex_normals: &'a [(f32, f32, f32)],
     texture_coords: &'a [(f32, f32)],
@@ -202,7 +272,7 @@ impl<'a> ObjectRef<'a> {
 
     pub fn group_iter(&self) -> impl Iterator<Item = GroupRef<'a>> {
         self.groups.iter().map(|group| GroupRef {
-            verticies: self.verticies,
+            vertices: self.vertices,
             vertex_colors: self.vertex_colors,
             vertex_normals: self.vertex_normals,
             texture_coords: self.texture_coords,
@@ -232,7 +302,7 @@ impl<'a> ObjectRef<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct GroupRef<'a> {
-    verticies: &'a [(f32, f32, f32)],
+    vertices: &'a [(f32, f32, f32)],
     vertex_colors: Option<&'a [(f32, f32, f32)]>,
     vertex_normals: &'a [(f32, f32, f32)],
     texture_coords: &'a [(f32, f32)],
@@ -264,9 +334,9 @@ impl GroupRef<'_> {
 
             Face {
                 vert_positions: [
-                    self.verticies[i1 as usize - 1],
-                    self.verticies[i2 as usize - 1],
-                    self.verticies[i3 as usize - 1],
+                    self.vertices[i1 as usize - 1],
+                    self.vertices[i2 as usize - 1],
+                    self.vertices[i3 as usize - 1],
                 ],
 
                 vert_colors: self.vertex_colors.map(|colors| {
@@ -297,15 +367,37 @@ impl GroupRef<'_> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Represents 3 vertices.
+///
+/// Contains:
+///     - the vertex position for each vertex
+///     - the vertex color for each vertex (optional)
+///     - the vertex normals for each vertex (optional)
+///     - the vertex uv coordinates for each vertex (optional)
+///
+/// # Examples
+/// ```rust
+/// # use polypath::Face;
+/// let face = Face {
+///     vert_positions: [
+///         (0.0, 0.0, 0.0),
+///         (1.0, 0.0, 0.0),
+///         (1.0, 1.0, 0.0),
+///     ],
+///     vert_colors: None,
+///     vert_normals: None,
+///     vert_uv_coords: None,
+/// };
+/// ```
 pub struct Face {
-    vert_positions: [(f32, f32, f32); 3],
-    vert_colors: Option<[(f32, f32, f32); 3]>,
-    vert_normals: Option<[(f32, f32, f32); 3]>,
-    vert_uv_coords: Option<[(f32, f32); 3]>,
+    pub vert_positions: [(f32, f32, f32); 3],
+    pub vert_colors: Option<[(f32, f32, f32); 3]>,
+    pub vert_normals: Option<[(f32, f32, f32); 3]>,
+    pub vert_uv_coords: Option<[(f32, f32); 3]>,
 }
 
 impl Face {
-    pub const fn verticies(&self) -> [VertexData; 3] {
+    pub const fn vertices(&self) -> [VertexData; 3] {
         let [v1p, v2p, v3p] = self.vert_positions;
 
         let [v1c, v2c, v3c] = option_to_array(self.vert_colors);
@@ -338,6 +430,13 @@ impl Face {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// Represents the data of a single vertex.
+///
+/// Contains:
+///     - the vertex position
+///     - the vertex color (optional)
+///     - the vertex normals (optional)
+///     - the vertex uv coordinates (optional)
 pub struct VertexData {
     pub position: (f32, f32, f32),
     pub color: Option<(f32, f32, f32)>,
@@ -346,7 +445,10 @@ pub struct VertexData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// Represents a single vertex, included associated material.
+///
 pub struct VertexTextureData {
+    /// Can be used to index into a [Vec][std::vec::Vec] of [`MaterialIdent`].
     pub material_index: usize,
     pub vertex: VertexData,
 }
