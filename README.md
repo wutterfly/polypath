@@ -59,7 +59,7 @@ fn main() {
 ```
 
 
-Directly get vertices, but loosing any grouping done via *objecs* or *groups*.
+Directly get vertices, but loosing any grouping done via *objects* or *groups*.
 
 ```rust
 use polypath::ObjObject;
