@@ -154,7 +154,10 @@ impl ObjObject {
             }
             [b'o', b' ', ..] => Line::Object(Self::parse_grouping(line[2..].trim())),
             [b'g', b' ', ..] => Line::Group(Self::parse_grouping(line[2..].trim())),
-            [b's', b' ', ..] => todo!("smooth"),
+            [b's', b' ', ..] => {
+                // TODO: smooth
+                Line::Empty
+            }
             [b'm', b't', b'l', b'l', b'i', b'b', b' ', ..] => {
                 Line::MaterialLib(Self::parse_mtl(line[7..].trim())?)
             }
