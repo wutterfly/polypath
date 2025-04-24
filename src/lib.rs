@@ -2,6 +2,7 @@
 #![warn(clippy::cargo)]
 
 mod obj;
+pub mod opt;
 mod parse;
 
 pub use obj::Face;

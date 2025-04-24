@@ -7,7 +7,7 @@ const MESHES: &[&str] = &[
 ];
 
 fn main() {
-    for mesh in &MESHES[..] {
+    for mesh in MESHES {
         let start = std::time::Instant::now();
 
         // read .obj file

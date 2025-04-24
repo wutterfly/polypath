@@ -1,11 +1,4 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    fs::File,
-    io::BufReader,
-    path::Path,
-};
-
-use rustc_hash::FxBuildHasher;
+use std::{fs::File, io::BufReader, path::Path};
 
 use crate::{
     Error,
@@ -85,19 +78,19 @@ impl ObjObject {
 
     #[inline]
     /// Returns the number of individual objects contained in the .obj file.
-    pub fn object_count(&self) -> usize {
+    pub const fn object_count(&self) -> usize {
         self.objects.len()
     }
 
     #[inline]
     /// Returns the number of individual groups contained in the .obj file.
-    pub fn group_count(&self) -> usize {
+    pub const fn group_count(&self) -> usize {
         self.groups.len()
     }
 
     #[inline]
     /// Returns the number of individual faces contained in the .obj file.
-    pub fn face_count(&self) -> usize {
+    pub const fn face_count(&self) -> usize {
         self.faces.len()
     }
 
@@ -106,7 +99,7 @@ impl ObjObject {
     ///
     /// This function is not 100% prezise, as it just calculates 3 verticices for each face.
     /// Vertices that are shared are not considered.
-    pub fn vert_count(&self) -> usize {
+    pub const fn vert_count(&self) -> usize {
         self.faces.len() * 3
     }
 
@@ -162,73 +155,6 @@ impl ObjObject {
         }
 
         (vertices, materials)
-    }
-
-    /// Returns:
-    ///     - a [Vec][std::vec::Vec] containing each unqiue vertex.
-    ///     - a [Vec][std::vec::Vec] containing indicies into the vertex buffer. Every 3 indicies build a face.
-    ///     - a [Vec][std::vec::Vec] containing [`MaterialIdent`]. Each returned vertex contains a `material_index` that can be used to index into this list, to retrive the [`MaterialIdent`].
-    /// This ignores any grouping done via objects (o) or groups (g).
-    /// If keeping these groupings is important, consider iterating manually over each object/group/face.
-    pub fn vertices_indexed(&self) -> (Vec<usize>, Vec<VertexTextureData>, Vec<MaterialIdent>) {
-        let mut vertices = HashMap::<VertexDataComp, usize, _>::with_capacity_and_hasher(
-            self.vert_count(),
-            FxBuildHasher,
-        );
-        let mut indicies = Vec::with_capacity(self.vert_count());
-        let mut materials = vec![MaterialIdent {
-            mtllib: None,
-            mtluse: None,
-        }];
-        let mut counter = 0;
-
-        // generate materials vector
-        // and deduplicate vertices
-        for obj in self.objects_iter() {
-            let mtllib = obj.mtllib.map(String::as_str);
-
-            for group in obj.group_iter() {
-                let mtluse = group.mtluse.map(String::as_str);
-
-                let t = MaterialIdent { mtllib, mtluse };
-                let texture_index = materials.iter().position(|m| *m == t).unwrap_or_else(|| {
-                    materials.push(t);
-                    materials.len() - 1
-                });
-
-                for f in group.faces_iter() {
-                    for v in f.vertices() {
-                        let vert = VertexTextureData {
-                            material_index: texture_index,
-                            vertex: v,
-                        };
-
-                        match vertices.entry(VertexDataComp::from(vert)) {
-                            Entry::Occupied(occupied_entry) => indicies.push(*occupied_entry.get()),
-                            Entry::Vacant(vacant_entry) => {
-                                vacant_entry.insert(counter);
-                                indicies.push(counter);
-                                counter += 1;
-                            }
-                        }
-
-                        debug_assert!(vertices.contains_key(&VertexDataComp::from(vert)));
-                    }
-                }
-            }
-        }
-
-        // arrange vertex buffer
-        let mut vertex_buffer = Vec::with_capacity(vertices.len());
-        vertex_buffer.resize(vertices.len(), VertexTextureData::default());
-
-        assert_eq!(counter, vertices.len());
-
-        for (vert, pos) in vertices {
-            vertex_buffer[pos] = VertexTextureData::from(vert);
-        }
-
-        (indicies, vertex_buffer, materials)
     }
 }
 
@@ -448,91 +374,34 @@ pub struct VertexData {
     pub texture_coord: Option<(f32, f32)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+impl Eq for VertexData {}
+
+impl std::hash::Hash for VertexData {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let (x, y, z) = self.position;
+        (f32::to_bits(x), f32::to_bits(y), f32::to_bits(z)).hash(state);
+
+        self.color
+            .map(|(r, g, b)| (f32::to_bits(r), f32::to_bits(g), f32::to_bits(b)))
+            .hash(state);
+
+        self.normal
+            .map(|(u, v, w)| (f32::to_bits(u), f32::to_bits(v), f32::to_bits(w)))
+            .hash(state);
+
+        self.texture_coord
+            .map(|(u, v)| (f32::to_bits(u), f32::to_bits(v)))
+            .hash(state);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 /// Represents a single vertex, included associated material.
-///
 pub struct VertexTextureData {
     /// Can be used to index into a [Vec][std::vec::Vec] of [`MaterialIdent`].
     pub material_index: usize,
     pub vertex: VertexData,
-}
-
-impl From<VertexDataComp> for VertexTextureData {
-    #[inline]
-    fn from(value: VertexDataComp) -> Self {
-        let (x, y, z) = value.position;
-
-        Self {
-            material_index: value.texture_index,
-            vertex: VertexData {
-                position: (
-                    f32::from_ne_bytes(x),
-                    f32::from_ne_bytes(y),
-                    f32::from_ne_bytes(z),
-                ),
-                color: value.color.map(|(r, g, b)| {
-                    (
-                        f32::from_ne_bytes(r),
-                        f32::from_ne_bytes(g),
-                        f32::from_ne_bytes(b),
-                    )
-                }),
-                normal: value.normal.map(|(u, v, w)| {
-                    (
-                        f32::from_ne_bytes(u),
-                        f32::from_ne_bytes(v),
-                        f32::from_ne_bytes(w),
-                    )
-                }),
-                texture_coord: value
-                    .texture_coord
-                    .map(|(u, v)| (f32::from_ne_bytes(u), f32::from_ne_bytes(v))),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct VertexDataComp {
-    pub texture_index: usize,
-    pub position: ([u8; 4], [u8; 4], [u8; 4]),
-    pub color: Option<([u8; 4], [u8; 4], [u8; 4])>,
-    pub normal: Option<([u8; 4], [u8; 4], [u8; 4])>,
-    pub texture_coord: Option<([u8; 4], [u8; 4])>,
-}
-
-impl From<VertexTextureData> for VertexDataComp {
-    #[inline]
-    fn from(value: VertexTextureData) -> Self {
-        let (x, y, z) = value.vertex.position;
-
-        Self {
-            texture_index: value.material_index,
-            position: (
-                f32::to_ne_bytes(x),
-                f32::to_ne_bytes(y),
-                f32::to_ne_bytes(z),
-            ),
-            color: value.vertex.color.map(|(r, g, b)| {
-                (
-                    f32::to_ne_bytes(r),
-                    f32::to_ne_bytes(g),
-                    f32::to_ne_bytes(b),
-                )
-            }),
-            normal: value.vertex.normal.map(|(u, v, w)| {
-                (
-                    f32::to_ne_bytes(u),
-                    f32::to_ne_bytes(v),
-                    f32::to_ne_bytes(w),
-                )
-            }),
-            texture_coord: value
-                .vertex
-                .texture_coord
-                .map(|(u, v)| (f32::to_ne_bytes(u), f32::to_ne_bytes(v))),
-        }
-    }
 }
 
 #[inline]

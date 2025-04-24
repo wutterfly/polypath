@@ -1,44 +1,24 @@
 use std::{fmt::Write as _, io::Write as _};
 
-use polypath::{ObjObject, VertexTextureData};
+use polypath::{ObjObject, VertexTextureData, opt};
 
-const MESHES: &[&str] = &[
-    "./meshes/armadillo.obj",   // 0
-    "./meshes/cow.obj",         // 1
-    "./meshes/spot.obj",        // 2
-    "./meshes/beast.obj",       // 3
-    "./meshes/beetle-alt.obj",  // 4
-    "./meshes/bimba.obj",       // 5
-    "./meshes/cheburashka.obj", // 6
-    "./meshes/cube.obj",        // 7
-    "./meshes/cubes.obj",       // 8
-    "./meshes/rungholt.obj",    // 9
-    "./meshes/diamond.obj",     // 10
-];
+#[test]
+fn test_write_back() {
+    let obj = ObjObject::read_from_file("./meshes/cheburashka.obj").unwrap();
 
-fn main() {
-    for mesh in &MESHES[..] {
-        let start = std::time::Instant::now();
+    _object_to_file(&obj);
 
-        let obj = ObjObject::read_from_file(mesh).unwrap();
-        println!(
-            "[{mesh}] took [{}ms] with [{} vertices]",
-            start.elapsed().as_millis(),
-            obj.vert_count()
-        );
+    let (verts, _) = obj.vertices();
+    println!("verts: {}", verts.len());
 
-        _object_to_file(&obj);
+    _vertex_to_file(verts);
 
-        let (verts, _) = obj.vertices();
-        println!("verts: {}", verts.len());
+    let (vertices, _) = obj.vertices();
+    let (indicies, verts) = opt::indexed_vertices(&vertices);
 
-        _vertex_to_file(verts);
+    println!("indicies: {}  --  verts: {}", indicies.len(), verts.len());
 
-        let (indicies, verts, _) = obj.vertices_indexed();
-        println!("indicies: {}  --  verts: {}", indicies.len(), verts.len());
-
-        write_indexed_to_file(verts, indicies);
-    }
+    write_indexed_to_file(verts, indicies);
 }
 
 fn write_indexed_to_file(verts: Vec<VertexTextureData>, indicies: Vec<usize>) {

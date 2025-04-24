@@ -1,14 +1,15 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use polypath::ObjObject;
+use polypath::{ObjObject, opt};
 
 fn verts(obj: &ObjObject) -> Vec<polypath::VertexTextureData> {
     obj.vertices().0
 }
 
 fn verts_indexed(obj: &ObjObject) -> (Vec<usize>, Vec<polypath::VertexTextureData>) {
-    let (i, v, _) = obj.vertices_indexed();
+    let (v, _) = obj.vertices();
+    let (i, v) = opt::indexed_vertices(&v);
     (i, v)
 }
 
