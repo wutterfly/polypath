@@ -87,7 +87,7 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
     debug_assert!(adjacency.is_empty());
 
     // make sure that if we removed a dublicate face, the vertex count is still correct
-    debug_assert_eq!(vc - new_vertices.len() % 3, 0);
+    debug_assert_eq!((vc - new_vertices.len()) % 3, 0);
 
     new_vertices
 }
