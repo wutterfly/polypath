@@ -24,10 +24,9 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
     let mut adjacency: HashMap<_, HashSet<_, _>, _> =
         HashMap::with_capacity_and_hasher(vertices.len(), FxBuildHasher);
 
-    let face_iter = vertices.chunks(3).map(|face| {
-        let face: [VertexTextureData; 3] = TryFrom::try_from(face).unwrap();
-        face
-    });
+    let face_iter = vertices
+        .chunks(3)
+        .map(|face| <[VertexTextureData; 3]>::try_from(face).unwrap());
     for face in face_iter {
         for vertex in face {
             match adjacency.entry(vertex) {
@@ -65,7 +64,9 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
         }
 
         // every face of current vertex is added
-        _ = adjacency.remove(&current);
+        if let Some(rm) = adjacency.remove(&current) {
+            debug_assert!(rm.is_empty());
+        }
 
         // first try to use a recently used vertex
         if let Some(next) = stack.pop() {
@@ -81,8 +82,12 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
         }
     }
 
-    // make sure we didn't lose a vertex or added one twice
-    debug_assert_eq!(new_vertices.len(), vc);
+    debug_assert!(stack.is_empty());
+    debug_assert!(vertices.is_empty());
+    debug_assert!(adjacency.is_empty());
+
+    // make sure that if we removed a dublicate face, the vertex count is still correct
+    debug_assert_eq!(vc - new_vertices.len() % 3, 0);
 
     new_vertices
 }
