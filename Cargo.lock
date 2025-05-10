@@ -296,8 +296,13 @@ name = "polypath"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "prismath",
  "rustc-hash",
 ]
+
+[[package]]
+name = "prismath"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"

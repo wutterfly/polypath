@@ -1,8 +1,10 @@
 #![warn(clippy::nursery)]
 #![warn(clippy::cargo)]
 
-mod obj;
+pub mod meshlet;
 pub mod opt;
+
+mod obj;
 mod parse;
 
 pub use obj::Face;
@@ -70,5 +72,16 @@ impl From<ParseIntError> for Error {
     #[inline]
     fn from(value: ParseIntError) -> Self {
         Self::ParseI(value)
+    }
+}
+
+pub trait Vertex {
+    fn position(&self) -> (f32, f32, f32);
+}
+
+impl Vertex for VertexTextureData {
+    #[inline]
+    fn position(&self) -> (f32, f32, f32) {
+        self.vertex.position
     }
 }

@@ -7,19 +7,15 @@ keywords = [".obj", "mesh loader"]
 categories = ["graphics", "parsing", "parser-implementations"]
 repository = "https://github.com/wutterfly/polypath.git"
 description = "A very basic file parser for .obj and .mtl files."
-exclude = [
-    "examples/*",
-    "tests/*",
-    "benches/*",
-    "meshes/*"
-]
+exclude = ["examples/*", "tests/*", "benches/*", "meshes/*"]
 
 [dependencies]
 rustc-hash = "2.1.1"
 
+prismath = { path = "../prismath" }
+
 [dev-dependencies]
 criterion = "0.5.1"
-
 
 
 [[bench]]
@@ -30,5 +26,3 @@ harness = false
 [[bench]]
 name = "read"
 harness = false
-
-
