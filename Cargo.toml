@@ -12,8 +12,6 @@ exclude = ["examples/*", "tests/*", "benches/*", "meshes/*"]
 [dependencies]
 rustc-hash = "2.1.1"
 
-prismath = { path = "../prismath" }
-
 [dev-dependencies]
 criterion = "0.5.1"
 

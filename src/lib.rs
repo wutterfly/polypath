@@ -6,6 +6,7 @@ pub mod opt;
 
 mod obj;
 mod parse;
+mod vec3;
 
 pub use obj::Face;
 pub use obj::MaterialIdent;

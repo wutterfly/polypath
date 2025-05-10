@@ -1,4 +1,4 @@
-use prismath::vec::{Vec3, Vec4};
+use super::vec3::Vec3;
 
 use super::Vertex;
 
@@ -132,7 +132,7 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
     meshlets
 }
 
-fn triangle_normal(p0: Vec3<f32>, p1: Vec3<f32>, p2: Vec3<f32>) -> Vec3<f32> {
+fn triangle_normal(p0: Vec3, p1: Vec3, p2: Vec3) -> Vec3 {
     let p10 = p0 - p1;
     let p20 = p2 - p1;
 
@@ -141,15 +141,15 @@ fn triangle_normal(p0: Vec3<f32>, p1: Vec3<f32>, p2: Vec3<f32>) -> Vec3<f32> {
     if n == Vec3::zero() { n } else { n.normalized() }
 }
 
-fn check_cone(normals: &[Vec3<f32>], th: f32) -> bool {
+fn check_cone(normals: &[Vec3], th: f32) -> bool {
     let mut avg = Vec3::zero();
 
     for n in normals {
-        avg += n;
+        avg += *n;
     }
 
     if avg != Vec3::zero() {
-        avg.normalize();
+        avg = avg.normalized();
     }
 
     let mut mdot = 1.0;
@@ -167,15 +167,15 @@ fn check_cone(normals: &[Vec3<f32>], th: f32) -> bool {
     true
 }
 
-fn calc_cone(normals: &[Vec3<f32>]) -> Vec4<f32> {
+fn calc_cone(normals: &[Vec3]) -> (f32, f32, f32, f32) {
     let mut avg = Vec3::zero();
 
     for n in normals {
-        avg += n;
+        avg += *n;
     }
 
     if avg != Vec3::zero() {
-        avg.normalize();
+        avg = avg.normalized();
     }
 
     let mut mdot = 1.0;
@@ -192,7 +192,7 @@ fn calc_cone(normals: &[Vec3<f32>]) -> Vec4<f32> {
         f32::sqrt(mdot.mul_add(-mdot, 1.0))
     };
 
-    Vec4::from3(avg, conew)
+    (avg.x, avg.y, avg.z, conew)
 }
 
 /// Represent a cluster of triangles.
@@ -202,7 +202,7 @@ fn calc_cone(normals: &[Vec3<f32>]) -> Vec4<f32> {
 /// The cone component represents the average Meshlet normal (x,y,z) and an angle (w).
 #[derive(Debug)]
 pub struct Meshlet<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize> {
-    pub cone: Vec4<f32>,
+    pub cone: (f32, f32, f32, f32),
     pub vertices: [u32; VERTEX_COUNT],
     pub triangles: [[u8; 3]; TRIANGLE_COUNT],
     pub vertex_count: u8,
@@ -215,7 +215,7 @@ impl<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize> Default
     #[inline]
     fn default() -> Self {
         Self {
-            cone: Vec4::zero(),
+            cone: (0.0, 0.0, 0.0, 0.0),
             vertices: [0; VERTEX_COUNT],
             triangles: [[0; 3]; TRIANGLE_COUNT],
             vertex_count: 0,
