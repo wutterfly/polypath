@@ -82,6 +82,12 @@ impl Vec3 {
 
     #[inline]
     #[must_use]
+    pub fn distance(self, rhs: Self) -> f32 {
+        (self - rhs).lenght()
+    }
+
+    #[inline]
+    #[must_use]
     pub fn normalized(&self) -> Self {
         let len = self.lenght();
         Self {

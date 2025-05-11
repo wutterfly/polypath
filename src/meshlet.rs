@@ -2,19 +2,59 @@ use super::vec3::Vec3;
 
 use super::Vertex;
 
+/// Represent a cluster of triangles.
+///
+/// A cluster of triangle indices into a vertex buffer.
+///
+/// The cone component represents the average Meshlet normal (x,y,z) and an angle (w).
+///
+/// The bounding sphere contains all vertices for this meshlet.
+#[derive(Debug)]
+pub struct Meshlet<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize> {
+    pub cone: (f32, f32, f32, f32),
+    pub bounding: Sphere,
+    pub vertices: [u32; VERTEX_COUNT],
+    pub triangles: [[u8; 3]; TRIANGLE_COUNT],
+    pub vertex_count: u8,
+    pub triangle_count: u8,
+}
+
+impl<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize> Default
+    for Meshlet<VERTEX_COUNT, TRIANGLE_COUNT>
+{
+    #[inline]
+    fn default() -> Self {
+        Self {
+            cone: (0.0, 0.0, 0.0, 0.0),
+            bounding: Sphere {
+                center: (0.0, 0.0, 0.0),
+                radius: 0.0,
+            },
+            vertices: [0; VERTEX_COUNT],
+            triangles: [[0; 3]; TRIANGLE_COUNT],
+            vertex_count: 0,
+            triangle_count: 0,
+        }
+    }
+}
+
 /// Generates Meshlets from index and vertex data. Takes an additional cone threshold, that controls how wide the normal cone can be.
 ///
-/// The cone threshold can be between \[-1, 1\]. A larger cone threshold means more meshlets (meshlets don't get filled), but a more uniform triangle normal direction.
+/// The cone threshold can be between \[0.1, 0.9\]. A larger cone threshold means more meshlets (meshlets don't get filled), but a more uniform triangle normal direction.
 pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V: Vertex>(
     indices: &[u32],
     vertices: &[V],
-    cone_threshold: f32,
+    mut cone_threshold: f32,
 ) -> Vec<Meshlet<VERTEX_COUNT, TRIANGLE_COUNT>> {
-    let mut meshlets = Vec::new();
-    let mut meshlet = Meshlet::default();
-    let mut contained = vec![-1i32; vertices.len()];
+    cone_threshold = f32::clamp(cone_threshold, 0.1, 0.9);
 
-    let mut current_normals = Vec::with_capacity(84);
+    let mut meshlets = Vec::new();
+
+    // state of the current meshlet
+    let mut meshlet: Meshlet<VERTEX_COUNT, TRIANGLE_COUNT> = Meshlet::default();
+    let mut contained: Vec<i32> = vec![-1i32; vertices.len()];
+    let mut current_vertices: Vec<Vec3> = Vec::with_capacity(VERTEX_COUNT);
+    let mut current_normals: Vec<Vec3> = Vec::with_capacity(TRIANGLE_COUNT);
 
     // iterate of faces (set of 3 indices)
     let faces = indices
@@ -29,61 +69,37 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
             Vec3::from(vertices[i2 as usize].position()),
         );
 
-        // check if an additional face can be added
-        if meshlet.triangle_count as usize == meshlet.triangles.len() {
-            // if not, flush meshlet
-            debug_assert!(check_cone(&current_normals, cone_threshold));
-            meshlet.cone = calc_cone(&current_normals);
-            current_normals.clear();
-            current_normals.push(normal);
-
-            meshlets.push(meshlet);
-            contained.fill(-1);
-            meshlet = Meshlet::default();
-        }
-
         // get indices into vertex buffer for current face/indices
-        let [av, bv, cv] = unsafe {
-            contained.get_disjoint_unchecked_mut([i0 as usize, i1 as usize, i2 as usize])
-        };
+        let va = contained[i0 as usize];
+        let vb = contained[i1 as usize];
+        let vc = contained[i2 as usize];
 
         // get number of new vertices in this face
-        let additional_vertices = u8::from(*av == -1) + u8::from(*bv == -1) + u8::from(*cv == -1);
+        let additional_vertices = u8::from(va == -1) + u8::from(vb == -1) + u8::from(vc == -1);
 
-        // check if number of new vertices can still fit into this meshlet
-        if (meshlet.vertex_count + additional_vertices) as usize > meshlet.vertices.len() {
-            // flush meshlet
+        // check if the meshlet is full or face normals are too far apart
+        let indices_full = meshlet.triangle_count as usize == meshlet.triangles.len();
+        let verts_full =
+            (meshlet.vertex_count + additional_vertices) as usize > meshlet.vertices.len();
+        let too_wide = !check_cone_next(&current_normals, normal, cone_threshold);
+
+        // flush meshlet
+        if indices_full || verts_full || too_wide {
             debug_assert!(check_cone(&current_normals, cone_threshold));
             meshlet.cone = calc_cone(&current_normals);
             current_normals.clear();
-            current_normals.push(normal);
 
-            meshlets.push(meshlet);
+            meshlet.bounding = build_bounding_sphere(&current_vertices);
+            current_vertices.clear();
+
             contained.fill(-1);
-            meshlet = Meshlet::default();
-        }
-
-        // check if meshlet cone would become too big
-        current_normals.push(normal);
-        let check = check_cone(&current_normals, cone_threshold);
-
-        if !check {
-            current_normals.pop();
-            debug_assert!(check_cone(&current_normals, cone_threshold));
-            meshlet.cone = calc_cone(&current_normals);
-            current_normals.clear();
-            current_normals.push(normal);
-
-            // flush meshlet
-            meshlets.push(meshlet);
-            contained.fill(-1);
-            meshlet = Meshlet::default();
+            meshlets.push(std::mem::take(&mut meshlet));
         }
 
         // reborrow here - implicit drop of av, bv, cv
-        let [va, vb, vc] = unsafe {
-            contained.get_disjoint_unchecked_mut([i0 as usize, i1 as usize, i2 as usize])
-        };
+        let [va, vb, vc] = contained
+            .get_disjoint_mut([i0 as usize, i1 as usize, i2 as usize])
+            .unwrap();
 
         // if vertex is not already in meshlet
         if *va == -1 {
@@ -97,7 +113,7 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
         if *vb == -1 {
             // push vertex
             *vb = i32::from(meshlet.vertex_count);
-            // set shlet vertex index
+            // set vertex index
             meshlet.vertices[meshlet.vertex_count as usize] = i1;
             meshlet.vertex_count += 1;
         }
@@ -117,6 +133,14 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
             u8::try_from(*vc).unwrap(),
         ];
         meshlet.triangle_count += 1;
+
+        // add positions & normal for this face
+        current_normals.push(normal);
+        current_vertices.extend_from_slice(&[
+            Vec3::from(vertices[i0 as usize].position()),
+            Vec3::from(vertices[i1 as usize].position()),
+            Vec3::from(vertices[i2 as usize].position()),
+        ]);
     }
 
     // check if there is already data written to meshlet
@@ -126,6 +150,8 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
 
         debug_assert!(check_cone(&current_normals, cone_threshold));
         meshlet.cone = calc_cone(&current_normals);
+        meshlet.bounding = build_bounding_sphere(&current_vertices);
+
         meshlets.push(meshlet);
     }
 
@@ -167,6 +193,32 @@ fn check_cone(normals: &[Vec3], th: f32) -> bool {
     true
 }
 
+fn check_cone_next(normals: &[Vec3], next: Vec3, th: f32) -> bool {
+    let mut avg = Vec3::zero();
+
+    for n in normals.iter().chain(std::iter::once(&next)) {
+        avg += *n;
+    }
+
+    if avg != Vec3::zero() {
+        avg = avg.normalized();
+    }
+
+    let mut mdot = 1.0;
+
+    for n in normals.iter().chain(std::iter::once(&next)) {
+        let dot = Vec3::dot(&avg, n);
+
+        mdot = f32::min(mdot, dot);
+
+        if mdot < th {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn calc_cone(normals: &[Vec3]) -> (f32, f32, f32, f32) {
     let mut avg = Vec3::zero();
 
@@ -195,31 +247,56 @@ fn calc_cone(normals: &[Vec3]) -> (f32, f32, f32, f32) {
     (avg.x, avg.y, avg.z, conew)
 }
 
-/// Represent a cluster of triangles.
-///
-/// A cluster of triangle indices into a vertex buffer.
-///
-/// The cone component represents the average Meshlet normal (x,y,z) and an angle (w).
-#[derive(Debug)]
-pub struct Meshlet<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize> {
-    pub cone: (f32, f32, f32, f32),
-    pub vertices: [u32; VERTEX_COUNT],
-    pub triangles: [[u8; 3]; TRIANGLE_COUNT],
-    pub vertex_count: u8,
-    pub triangle_count: u8,
+/// A bounding sphere around a cluster of points.
+#[derive(Debug, Clone, Copy)]
+pub struct Sphere {
+    pub center: (f32, f32, f32),
+    pub radius: f32,
 }
 
-impl<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize> Default
-    for Meshlet<VERTEX_COUNT, TRIANGLE_COUNT>
-{
-    #[inline]
-    fn default() -> Self {
-        Self {
-            cone: (0.0, 0.0, 0.0, 0.0),
-            vertices: [0; VERTEX_COUNT],
-            triangles: [[0; 3]; TRIANGLE_COUNT],
-            vertex_count: 0,
-            triangle_count: 0,
-        }
+fn build_bounding_sphere(vertices: &[Vec3]) -> Sphere {
+    let mut min_x = f32::MIN;
+    let mut max_x = f32::MAX;
+
+    let mut min_y = f32::MIN;
+    let mut max_y = f32::MAX;
+
+    let mut min_z = f32::MIN;
+    let mut max_z = f32::MAX;
+
+    // find min/max for every axis (x,y,z)
+    for p in vertices.iter().copied() {
+        // x
+        min_x = f32::min(min_x, p.x);
+        max_x = f32::max(max_x, p.x);
+
+        // y
+        min_y = f32::min(min_y, p.y);
+        max_y = f32::max(max_y, p.y);
+
+        // z
+        min_z = f32::min(min_z, p.z);
+        max_z = f32::max(max_z, p.z);
+    }
+
+    // find axis with greatest diameter
+    let center = Vec3::new(
+        (min_x + max_x) / 2.0,
+        (min_y + max_y) / 2.0,
+        (min_z + max_z) / 2.0,
+    );
+
+    // got bounding box with corners (Vec3<min_x, min_y, min_z> , Vec3<max_x, max_y, max_z>)
+    // now find a sphere
+
+    let mut radius = 0.0;
+    for p in vertices.iter().copied() {
+        let distance = Vec3::distance(p, center);
+        radius = f32::max(radius, distance);
+    }
+
+    Sphere {
+        center: (center.x, center.y, center.z),
+        radius,
     }
 }
