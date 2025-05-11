@@ -3,6 +3,12 @@ use crate::{Error, ObjObject};
 use std::mem;
 
 impl ObjObject {
+    /// Parses a .obj file from some sort of input reader.
+    ///
+    /// Returns a `ObjObject` from where vertex data can be extracted.
+    ///
+    /// # Errors
+    /// Returns an `Error` if the .obj file is not as structured as expected.
     pub fn parse(mut reader: impl std::io::BufRead) -> Result<Self, Error> {
         let mut buffer = String::with_capacity(256);
 
@@ -33,7 +39,7 @@ impl ObjObject {
             buffer.clear();
 
             match line {
-                Line::Empty | Line::Comment => continue,
+                Line::Empty | Line::Comment => {}
                 Line::Vertex(vertex_data) => {
                     vertices.push(vertex_data.position);
                     if let Some(color) = vertex_data.color {

@@ -1,4 +1,5 @@
 #![warn(clippy::nursery)]
+#![warn(clippy::pedantic)]
 #![warn(clippy::cargo)]
 
 pub mod meshlet;

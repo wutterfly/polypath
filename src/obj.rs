@@ -64,7 +64,7 @@ pub struct ObjObject {
 }
 
 impl ObjObject {
-    /// Reads a .obj file and returns a ObjObject.
+    /// Reads a .obj file and returns a `ObjObject`.
     ///
     /// # Error
     /// - Returns an [Error][std::io::Error] if reading from file fails
@@ -77,24 +77,28 @@ impl ObjObject {
     }
 
     #[inline]
+    #[must_use]
     /// Returns the number of individual objects contained in the .obj file.
     pub const fn object_count(&self) -> usize {
         self.objects.len()
     }
 
     #[inline]
+    #[must_use]
     /// Returns the number of individual groups contained in the .obj file.
     pub const fn group_count(&self) -> usize {
         self.groups.len()
     }
 
     #[inline]
+    #[must_use]
     /// Returns the number of individual faces contained in the .obj file.
     pub const fn face_count(&self) -> usize {
         self.faces.len()
     }
 
     #[inline]
+    #[must_use]
     /// Returns the raw number of individual verticies contained in the .obj file.
     ///
     /// This function is not 100% prezise, as it just calculates 3 verticices for each face.
@@ -327,6 +331,7 @@ pub struct Face {
 }
 
 impl Face {
+    #[must_use]
     pub const fn vertices(&self) -> [VertexData; 3] {
         let [v1p, v2p, v3p] = self.vert_positions;
 

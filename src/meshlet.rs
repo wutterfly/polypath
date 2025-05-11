@@ -281,9 +281,9 @@ fn build_bounding_sphere(vertices: &[Vec3]) -> Sphere {
 
     // find axis with greatest diameter
     let center = Vec3::new(
-        (min_x + max_x) / 2.0,
-        (min_y + max_y) / 2.0,
-        (min_z + max_z) / 2.0,
+        f32::midpoint(min_x, max_x),
+        f32::midpoint(min_y, max_y),
+        f32::midpoint(min_z, max_z),
     );
 
     // got bounding box with corners (Vec3<min_x, min_y, min_z> , Vec3<max_x, max_y, max_z>)

@@ -4,6 +4,7 @@ use rustc_hash::FxBuildHasher;
 
 use crate::VertexTextureData;
 
+#[must_use]
 /// Optimizes the ordering of vertices.
 ///
 /// Takes a list of verticies, where every set of 3 vertices is assumed 1 triangle. Reorders the vertices for optimal cache reuse.
@@ -92,6 +93,7 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
     new_vertices
 }
 
+#[must_use]
 /// Returns:
 /// - a [Vec][std::vec::Vec] containing each unqiue vertex.
 /// - a [Vec][std::vec::Vec] containing indicies into the vertex buffer. Every 3 indicies build a face.
