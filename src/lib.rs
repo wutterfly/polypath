@@ -4,6 +4,7 @@
 
 pub mod meshlet;
 pub mod opt;
+pub mod bounding;
 
 mod obj;
 mod parse;

@@ -1,3 +1,5 @@
+use crate::bounding::{Sphere, build_bounding_sphere};
+
 use super::vec3::Vec3;
 
 use super::Vertex;
@@ -53,7 +55,7 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
     // state of the current meshlet
     let mut meshlet: Meshlet<VERTEX_COUNT, TRIANGLE_COUNT> = Meshlet::default();
     let mut contained: Vec<i32> = vec![-1i32; vertices.len()];
-    let mut current_vertices: Vec<Vec3> = Vec::with_capacity(VERTEX_COUNT);
+    let mut current_vertices: Vec<(f32, f32, f32)> = Vec::with_capacity(VERTEX_COUNT);
     let mut current_normals: Vec<Vec3> = Vec::with_capacity(TRIANGLE_COUNT);
 
     // iterate of faces (set of 3 indices)
@@ -137,9 +139,9 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
         // add positions & normal for this face
         current_normals.push(normal);
         current_vertices.extend_from_slice(&[
-            Vec3::from(vertices[i0 as usize].position()),
-            Vec3::from(vertices[i1 as usize].position()),
-            Vec3::from(vertices[i2 as usize].position()),
+            vertices[i0 as usize].position(),
+            vertices[i1 as usize].position(),
+            vertices[i2 as usize].position(),
         ]);
     }
 
@@ -245,58 +247,4 @@ fn calc_cone(normals: &[Vec3]) -> (f32, f32, f32, f32) {
     };
 
     (avg.x, avg.y, avg.z, conew)
-}
-
-/// A bounding sphere around a cluster of points.
-#[derive(Debug, Clone, Copy)]
-pub struct Sphere {
-    pub center: (f32, f32, f32),
-    pub radius: f32,
-}
-
-fn build_bounding_sphere(vertices: &[Vec3]) -> Sphere {
-    let mut min_x = f32::MIN;
-    let mut max_x = f32::MAX;
-
-    let mut min_y = f32::MIN;
-    let mut max_y = f32::MAX;
-
-    let mut min_z = f32::MIN;
-    let mut max_z = f32::MAX;
-
-    // find min/max for every axis (x,y,z)
-    for p in vertices.iter().copied() {
-        // x
-        min_x = f32::min(min_x, p.x);
-        max_x = f32::max(max_x, p.x);
-
-        // y
-        min_y = f32::min(min_y, p.y);
-        max_y = f32::max(max_y, p.y);
-
-        // z
-        min_z = f32::min(min_z, p.z);
-        max_z = f32::max(max_z, p.z);
-    }
-
-    // find axis with greatest diameter
-    let center = Vec3::new(
-        f32::midpoint(min_x, max_x),
-        f32::midpoint(min_y, max_y),
-        f32::midpoint(min_z, max_z),
-    );
-
-    // got bounding box with corners (Vec3<min_x, min_y, min_z> , Vec3<max_x, max_y, max_z>)
-    // now find a sphere
-
-    let mut radius = 0.0;
-    for p in vertices.iter().copied() {
-        let distance = Vec3::distance(p, center);
-        radius = f32::max(radius, distance);
-    }
-
-    Sphere {
-        center: (center.x, center.y, center.z),
-        radius,
-    }
 }
