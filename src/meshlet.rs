@@ -91,7 +91,7 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
             meshlet.cone = calc_cone(&current_normals);
             current_normals.clear();
 
-            meshlet.bounding = build_bounding_sphere(&current_vertices);
+            meshlet.bounding = build_bounding_sphere(current_vertices.iter().copied());
             current_vertices.clear();
 
             contained.fill(-1);
@@ -152,7 +152,7 @@ pub fn build_meshlets<const VERTEX_COUNT: usize, const TRIANGLE_COUNT: usize, V:
 
         debug_assert!(check_cone(&current_normals, cone_threshold));
         meshlet.cone = calc_cone(&current_normals);
-        meshlet.bounding = build_bounding_sphere(&current_vertices);
+        meshlet.bounding = build_bounding_sphere(current_vertices.iter().copied());
 
         meshlets.push(meshlet);
     }

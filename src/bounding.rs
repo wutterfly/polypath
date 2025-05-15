@@ -8,7 +8,7 @@ pub struct Sphere {
 }
 
 /// Builds a bounding sphere around the given points.
-pub fn build_bounding_sphere(vertices: &[(f32, f32, f32)]) -> Sphere {
+pub fn build_bounding_sphere(vertices: impl Iterator<Item = (f32, f32, f32)> + Clone) -> Sphere {
     let mut min_x = f32::MIN;
     let mut max_x = f32::MAX;
 
@@ -19,7 +19,7 @@ pub fn build_bounding_sphere(vertices: &[(f32, f32, f32)]) -> Sphere {
     let mut max_z = f32::MAX;
 
     // find min/max for every axis (x,y,z)
-    for p in vertices.iter().copied().map(Vec3::from) {
+    for p in vertices.clone().map(Vec3::from) {
         // x
         min_x = f32::min(min_x, p.x);
         max_x = f32::max(max_x, p.x);
@@ -44,7 +44,7 @@ pub fn build_bounding_sphere(vertices: &[(f32, f32, f32)]) -> Sphere {
     // now find a sphere and make sure, each point is contained in it
 
     let mut radius = 0.0;
-    for p in vertices.iter().copied().map(Vec3::from) {
+    for p in vertices.clone().map(Vec3::from) {
         let distance = Vec3::distance(p, center);
         radius = f32::max(radius, distance);
     }
