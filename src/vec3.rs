@@ -74,7 +74,7 @@ impl Vec3 {
 
     #[inline]
     #[must_use]
-    pub fn lenght(&self) -> f32 {
+    pub fn length(&self) -> f32 {
         self.z
             .mul_add(self.z, self.x.mul_add(self.x, self.y * self.y))
             .sqrt()
@@ -83,13 +83,13 @@ impl Vec3 {
     #[inline]
     #[must_use]
     pub fn distance(self, rhs: Self) -> f32 {
-        (self - rhs).lenght()
+        (self - rhs).length()
     }
 
     #[inline]
     #[must_use]
     pub fn normalized(&self) -> Self {
-        let len = self.lenght();
+        let len = self.length();
         Self {
             x: self.x / len,
             y: self.y / len,

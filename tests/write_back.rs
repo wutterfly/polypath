@@ -14,14 +14,14 @@ fn test_write_back() {
     _vertex_to_file(verts);
 
     let (vertices, _) = obj.vertices();
-    let (indicies, verts) = opt::indexed_vertices(&vertices);
+    let (indices, verts) = opt::indexed_vertices(&vertices);
 
-    println!("indicies: {}  --  verts: {}", indicies.len(), verts.len());
+    println!("indices: {}  --  verts: {}", indices.len(), verts.len());
 
-    write_indexed_to_file(verts, indicies);
+    write_indexed_to_file(verts, indices);
 }
 
-fn write_indexed_to_file(verts: Vec<VertexTextureData>, indicies: Vec<usize>) {
+fn write_indexed_to_file(verts: Vec<VertexTextureData>, indices: Vec<usize>) {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -47,7 +47,7 @@ fn write_indexed_to_file(verts: Vec<VertexTextureData>, indicies: Vec<usize>) {
     file.write(str.as_bytes()).unwrap();
     str.clear();
 
-    for chunk in indicies.chunks_exact(3) {
+    for chunk in indices.chunks_exact(3) {
         let pos1 = chunk[0] + 1;
         let pos2 = chunk[1] + 1;
         let pos3 = chunk[2] + 1;

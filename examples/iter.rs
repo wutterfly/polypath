@@ -20,7 +20,7 @@ fn main() {
         );
 
         // an .obj file can contain multiple objects
-        // this library interprets .obj with the following hirachy:
+        // this library interprets .obj with the following hierarchy:
         // .obj file -> [objects] -> [groups] -> [faces] -> [vertices]
         // iterate over all contained objects
         for o in obj.objects_iter() {

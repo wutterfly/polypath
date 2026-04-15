@@ -341,8 +341,8 @@ impl ObjObject {
 
         Ok((
             FaceData {
-                indicies: (i1, i2, i3),
-                normal_indicies: normal,
+                indices: (i1, i2, i3),
+                normal_indices: normal,
                 texture_indcicies: texture,
             },
             None,
@@ -389,14 +389,14 @@ impl ObjObject {
 
         [
             FaceData {
-                indicies: i1,
+                indices: i1,
                 texture_indcicies: t1,
-                normal_indicies: n1,
+                normal_indices: n1,
             },
             FaceData {
-                indicies: i2,
+                indices: i2,
                 texture_indcicies: t2,
-                normal_indicies: n2,
+                normal_indices: n2,
             },
         ]
     }
@@ -426,9 +426,9 @@ pub struct VertexData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaceData {
     // for vertex & color
-    pub(crate) indicies: (u32, u32, u32),
+    pub(crate) indices: (u32, u32, u32),
     pub(crate) texture_indcicies: Option<(u32, u32, u32)>,
-    pub(crate) normal_indicies: Option<(u32, u32, u32)>,
+    pub(crate) normal_indices: Option<(u32, u32, u32)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -482,9 +482,9 @@ mod tests {
         assert_eq!(
             res,
             FaceData {
-                indicies: (123, 456, 789),
+                indices: (123, 456, 789),
                 texture_indcicies: Some((5445, 123, 113)),
-                normal_indicies: Some((123, 1231, 12))
+                normal_indices: Some((123, 1231, 12))
             }
         );
     }
@@ -498,9 +498,9 @@ mod tests {
         assert_eq!(
             res,
             FaceData {
-                indicies: (123, 456, 789),
+                indices: (123, 456, 789),
                 texture_indcicies: Some((5445, 123, 113)),
-                normal_indicies: None,
+                normal_indices: None,
             }
         );
     }
@@ -514,9 +514,9 @@ mod tests {
         assert_eq!(
             res,
             FaceData {
-                indicies: (123, 456, 789),
+                indices: (123, 456, 789),
                 texture_indcicies: None,
-                normal_indicies: None,
+                normal_indices: None,
             }
         );
     }
@@ -530,9 +530,9 @@ mod tests {
         assert_eq!(
             res,
             FaceData {
-                indicies: (123, 456, 789),
+                indices: (123, 456, 789),
                 texture_indcicies: None,
-                normal_indicies: Some((123, 1231, 12)),
+                normal_indices: Some((123, 1231, 12)),
             }
         );
     }
@@ -547,9 +547,9 @@ mod tests {
         assert_eq!(
             res,
             FaceData {
-                indicies: (9, 10, 6),
+                indices: (9, 10, 6),
                 texture_indcicies: Some((2, 4, 3)),
-                normal_indicies: Some((7, 7, 5)),
+                normal_indices: Some((7, 7, 5)),
             }
         );
     }
@@ -562,18 +562,18 @@ mod tests {
         assert_eq!(
             f1,
             FaceData {
-                indicies: (123, 456, 789),
+                indices: (123, 456, 789),
                 texture_indcicies: Some((5445, 123, 113)),
-                normal_indicies: Some((123, 1231, 12))
+                normal_indices: Some((123, 1231, 12))
             }
         );
 
         assert_eq!(
             f2,
             Some(FaceData {
-                indicies: (123, 789, 509),
+                indices: (123, 789, 509),
                 texture_indcicies: Some((5445, 113, 111)),
-                normal_indicies: Some((123, 12, 576)),
+                normal_indices: Some((123, 12, 576)),
             })
         );
     }

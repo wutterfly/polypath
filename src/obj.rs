@@ -18,8 +18,8 @@ use crate::{
 ///
 /// Every group (g) can contain multiple faces (f).
 ///
-/// And each face (f) contains 3 vertices. If more then 3 vertices are specified for any face (f), they are automatically triangularized.
-/// A maximum of 4 vertices in a face can be triangularized.
+/// And each face (f) contains 3 vertices. If more then 3 vertices are specified for any face (f), they are automatically triangulated.
+/// A maximum of 4 vertices in a face can be triangulated.
 ///
 /// # Example
 /// ```rust
@@ -99,16 +99,16 @@ impl ObjObject {
 
     #[inline]
     #[must_use]
-    /// Returns the raw number of individual verticies contained in the .obj file.
+    /// Returns the raw number of individual vertices contained in the .obj file.
     ///
-    /// This function is not 100% prezise, as it just calculates 3 verticices for each face.
+    /// This function is not 100% precise, as it just calculates 3 vertices for each face.
     /// Vertices that are shared are not considered.
     pub const fn vert_count(&self) -> usize {
         self.faces.len() * 3
     }
 
     /// Returns an [Iterator][std::iter::Iterator] over each object.
-    pub fn objects_iter(&self) -> impl Iterator<Item = ObjectRef> {
+    pub fn objects_iter(&'_ self) -> impl Iterator<Item = ObjectRef<'_>> {
         self.objects.iter().map(|obj| ObjectRef {
             vertices: &self.vertices,
             vertex_colors: vec_to_option(&self.vertex_colors),
@@ -126,10 +126,10 @@ impl ObjObject {
 
     /// Returns:
     ///     - a [Vec][std::vec::Vec] containing 3 vertices for each face. Vertices that are shared are duplicated. Every 3 vertices build a face.
-    ///     - a [Vec][std::vec::Vec] containing [`MaterialIdent`]. Each returned vertex contains a `material_index` that can be used to index into this list, to retrive the [`MaterialIdent`].
+    ///     - a [Vec][std::vec::Vec] containing [`MaterialIdent`]. Each returned vertex contains a `material_index` that can be used to index into this list, to retrieve the [`MaterialIdent`].
     /// This ignores any grouping done via objects (o) or groups (g).
     /// If keeping these groupings is important, consider iterating manually over each object/group/face.
-    pub fn vertices(&self) -> (Vec<VertexTextureData>, Vec<MaterialIdent>) {
+    pub fn vertices(&'_ self) -> (Vec<VertexTextureData>, Vec<MaterialIdent<'_>>) {
         let mut vertices = Vec::with_capacity(self.vert_count());
         let mut materials = Vec::<MaterialIdent>::new();
 
@@ -264,7 +264,7 @@ impl GroupRef<'_> {
 
     pub fn faces_iter(&self) -> impl Iterator<Item = Face> {
         self.faces.iter().map(|face| {
-            let (i1, i2, i3) = face.indicies;
+            let (i1, i2, i3) = face.indices;
 
             Face {
                 vert_positions: [
@@ -280,7 +280,7 @@ impl GroupRef<'_> {
                         colors[i3 as usize - 1],
                     ]
                 }),
-                vert_normals: face.normal_indicies.map(|(n1, n2, n3)| {
+                vert_normals: face.normal_indices.map(|(n1, n2, n3)| {
                     [
                         self.vertex_normals[n1 as usize - 1],
                         self.vertex_normals[n2 as usize - 1],

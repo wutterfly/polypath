@@ -7,7 +7,7 @@ use crate::VertexTextureData;
 #[must_use]
 /// Optimizes the ordering of vertices.
 ///
-/// Takes a list of verticies, where every set of 3 vertices is assumed 1 triangle. Reorders the vertices for optimal cache reuse.
+/// Takes a list of vertices, where every set of 3 vertices is assumed 1 triangle. Reorders the vertices for optimal cache reuse.
 pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<VertexTextureData> {
     if vertices.is_empty() {
         return Vec::new();
@@ -87,7 +87,7 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
     debug_assert!(vertices.is_empty());
     debug_assert!(adjacency.is_empty());
 
-    // make sure that if we removed a dublicate face, the vertex count is still correct
+    // make sure that if we removed a duplicate face, the vertex count is still correct
     debug_assert_eq!((vc - new_vertices.len()) % 3, 0);
 
     new_vertices
@@ -95,10 +95,10 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
 
 #[must_use]
 /// Returns:
-/// - a [Vec][std::vec::Vec] containing each unqiue vertex.
-/// - a [Vec][std::vec::Vec] containing indicies into the vertex buffer. Every 3 indicies build a face.
+/// - a [Vec][std::vec::Vec] containing each unique vertex.
+/// - a [Vec][std::vec::Vec] containing indices into the vertex buffer. Every 3 indices build a face.
 pub fn indexed_vertices(vertices: &[VertexTextureData]) -> (Vec<usize>, Vec<VertexTextureData>) {
-    let mut indicies = Vec::with_capacity(vertices.len());
+    let mut indices = Vec::with_capacity(vertices.len());
     let mut vertices_new = Vec::with_capacity(vertices.len() / 3);
 
     let mut index_map = HashMap::<VertexTextureData, usize, _>::with_capacity_and_hasher(
@@ -118,17 +118,17 @@ pub fn indexed_vertices(vertices: &[VertexTextureData]) -> (Vec<usize>, Vec<Vert
             match index_map.entry(vertex) {
                 Entry::Occupied(occupied_entry) => {
                     let index = *occupied_entry.get();
-                    indicies.push(index);
+                    indices.push(index);
                 }
                 Entry::Vacant(vacant_entry) => {
                     vacant_entry.insert(index_c);
                     vertices_new.push(vertex);
-                    indicies.push(index_c);
+                    indices.push(index_c);
                     index_c += 1;
                 }
             }
         }
     }
 
-    (indicies, vertices_new)
+    (indices, vertices_new)
 }

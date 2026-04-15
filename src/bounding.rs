@@ -8,6 +8,7 @@ pub struct Sphere {
 }
 
 /// Builds a bounding sphere around the given points.
+#[must_use]
 pub fn build_bounding_sphere(vertices: impl Iterator<Item = (f32, f32, f32)> + Clone) -> Sphere {
     let mut min_x = f32::MIN;
     let mut max_x = f32::MAX;

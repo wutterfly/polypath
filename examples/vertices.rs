@@ -34,7 +34,7 @@ fn main() {
         let vertices = opt::optimize_vertex_order(vertices);
 
         // constructs an index buffer, deduplicating the raw vertices
-        let (indicies, verts) = opt::indexed_vertices(&vertices);
-        println!("indicies: {}  --  verts: {}", indicies.len(), verts.len());
+        let (indices, verts) = opt::indexed_vertices(&vertices);
+        println!("indices: {}  --  verts: {}", indices.len(), verts.len());
     }
 }

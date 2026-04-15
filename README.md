@@ -2,16 +2,13 @@
 
 # Polypath
 
-"A very basic file parser for .obj and .mtl files."
+A very basic file parser for .obj and .mtl files.
 
-
-Allows to read in *.obj* files, extraxt vertices or iterate over contained *objects*, *groups*, *faces* and vertices.
-
-
+Allows to read in _.obj_ files, extract vertices or iterate over contained _objects_, _groups_, _faces_ and vertices.
 
 # Example
 
-Manually iterating over each *object*, *group* and *face*.
+Manually iterating over each _object_, _group_ and _face_.
 
 ```rust
 use polypath::ObjObject;
@@ -30,7 +27,7 @@ fn main() {
     );
 
     // an .obj file can contain multiple objects
-    // this library interprets .obj with the following hirachy:
+    // this library interprets .obj with the following hierarchy:
     // .obj file -> [objects] -> [groups] -> [faces] -> [vertices]
     // iterate over all contained objects
     for o in obj.objects_iter() {
@@ -58,8 +55,7 @@ fn main() {
 
 ```
 
-
-Directly get vertices, but loosing any grouping done via *objects* or *groups*.
+Directly get vertices, but loosing any grouping done via _objects_ or _groups_.
 
 ```rust
 use polypath::ObjObject;
@@ -86,8 +82,8 @@ fn main() {
     // extract all the vertices (position, ?color, ?normal, ?texture coord, ?material index)
     // and all materials that are used (accessed by material index)
     // constructs an index buffer, deduplicating the raw vertices
-    let (indicies, verts, _) = obj.vertices_indexed();
-    println!("indicies: {}  --  verts: {}", indicies.len(), verts.len());
+    let (indices, verts, _) = obj.vertices_indexed();
+    println!("indices: {}  --  verts: {}", indices.len(), verts.len());
 }
 ```
 
@@ -98,10 +94,10 @@ fn main() {
 - reading .mtl files
 - vertex normal calculation
 
-
 # Supported .obj Features
+
 - vertices ("v )
-  + colors
+  - colors
 - vertex normals ("vn ")
 - vertex texture coords ("vt ")
 - objects ("o ")
@@ -113,9 +109,6 @@ fn main() {
 - material library ("mtllib ")
 - material use ("mtluse ")
 
-
-
-
-
 # Test Model Sources:
+
 - https://github.com/alecjacobson/common-3d-test-models/tree/master
