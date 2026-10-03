@@ -2,9 +2,9 @@
 #![warn(clippy::pedantic)]
 #![warn(clippy::cargo)]
 
+pub mod bounding;
 pub mod meshlet;
 pub mod opt;
-pub mod bounding;
 
 mod obj;
 mod parse;
