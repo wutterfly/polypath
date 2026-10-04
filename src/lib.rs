@@ -5,11 +5,16 @@
 pub mod bounding;
 pub mod meshlet;
 pub mod opt;
+pub mod tangent;
 
+mod mtl;
 mod obj;
 mod parse;
 mod vec3;
 
+pub use mtl::Material;
+pub use mtl::MtlLibrary;
+pub use mtl::TextureMap;
 pub use obj::Face;
 pub use obj::MaterialIdent;
 pub use obj::ObjObject;
@@ -19,7 +24,7 @@ pub use obj::VertexTextureData;
 use std::num::{ParseFloatError, ParseIntError};
 
 #[derive(Debug)]
-/// Represents different kind of errors that can happen while reading and parsing a .obj object.
+/// Represents different kind of errors that can happen while reading and parsing a .obj or .mtl file.
 pub enum Error {
     Io(std::io::Error),
     UnkownLine(String),
@@ -30,6 +35,8 @@ pub enum Error {
     OjectMultipleMtl(String),
     GroupMultipleMTl(String),
     NonUniformColors,
+    /// A line of a .mtl file sets a property of a material before the first `newmtl`.
+    MaterialLineBeforeNewmtl(String),
 }
 
 impl std::fmt::Display for Error {
@@ -46,6 +53,12 @@ impl std::fmt::Display for Error {
             }
             Self::GroupMultipleMTl(group) => {
                 writeln!(f, "Multiple material uses defined for group [{group}]")
+            }
+            Self::MaterialLineBeforeNewmtl(line) => {
+                writeln!(
+                    f,
+                    "Material property before any material was defined: [{line}]"
+                )
             }
             Self::NonUniformColors => {
                 writeln!(

@@ -6,6 +6,23 @@ A very basic file parser for .obj and .mtl files.
 
 Allows to read in _.obj_ files, extract vertices or iterate over contained _objects_, _groups_, _faces_ and vertices.
 
+# Materials
+
+_.mtl_ files are read with `MtlLibrary`. The `mtllib` of an object and the `mtluse` of a group (see below) are the file and the material to look up.
+
+```rust
+use polypath::MtlLibrary;
+
+let library = MtlLibrary::read_from_file("./meshes/Rocket.mtl").unwrap();
+let material = library.get("Mat").unwrap();
+
+println!("colour: {:?}", material.diffuse);
+if let Some(map) = &material.diffuse_map {
+    // the path as written in the file, relative to the folder of the .mtl file
+    println!("texture: {} (scale {:?})", map.path, map.scale);
+}
+```
+
 # Example
 
 Manually iterating over each _object_, _group_ and _face_.
