@@ -3,6 +3,7 @@
 #![warn(clippy::cargo)]
 
 pub mod bounding;
+pub mod gltf;
 pub mod meshlet;
 pub mod opt;
 pub mod tangent;
@@ -37,6 +38,8 @@ pub enum Error {
     NonUniformColors,
     /// A line of a .mtl file sets a property of a material before the first `newmtl`.
     MaterialLineBeforeNewmtl(String),
+    /// A glTF file could not be read, or is not what its accessors say.
+    Gltf(String),
 }
 
 impl std::fmt::Display for Error {
@@ -60,6 +63,7 @@ impl std::fmt::Display for Error {
                     "Material property before any material was defined: [{line}]"
                 )
             }
+            Self::Gltf(message) => writeln!(f, "glTF: {message}"),
             Self::NonUniformColors => {
                 writeln!(
                     f,
@@ -99,5 +103,12 @@ impl Vertex for VertexTextureData {
     #[inline]
     fn position(&self) -> (f32, f32, f32) {
         self.vertex.position
+    }
+}
+
+impl Vertex for [f32; 3] {
+    #[inline]
+    fn position(&self) -> (f32, f32, f32) {
+        <(f32, f32, f32)>::from(*self)
     }
 }

@@ -46,7 +46,7 @@ pub fn build_bounding_sphere(vertices: impl Iterator<Item = (f32, f32, f32)> + C
     // now find a sphere and make sure, each point is contained in it
 
     let mut radius = 0.0;
-    for p in vertices.clone().map(Vec3::from) {
+    for p in vertices.map(Vec3::from) {
         let distance = Vec3::distance(p, center);
         radius = f32::max(radius, distance);
     }
@@ -57,10 +57,12 @@ pub fn build_bounding_sphere(vertices: impl Iterator<Item = (f32, f32, f32)> + C
     }
 }
 
-/// Moves and scales `vertices` so that their bounding sphere is the unit sphere: centred on the
-/// origin, with a radius of 1. Whatever size a model was made in, and wherever it was placed,
-/// it then fits in the same space. Only the positions change: normals, colours and texture
-/// coordinates stay as they are, which is right because the scale is the same on every axis.
+/// Moves and scales `vertices` so that their bounding sphere is the unit sphere.
+///
+/// The sphere is centred on the origin, with a radius of 1. Whatever size a model was made in, and
+/// wherever it was placed, it then fits in the same space. Only the positions change: normals,
+/// colours and texture coordinates stay as they are, which is right because the scale is the same
+/// on every axis.
 ///
 /// Returns the sphere the vertices had before, to undo this (the centre is where the model
 /// was, the radius its size).
@@ -144,7 +146,7 @@ mod tests {
 
         for (x, y, z) in points {
             let (cx, cy, cz) = sphere.center;
-            let distance = ((x - cx).powi(2) + (y - cy).powi(2) + (z - cz).powi(2)).sqrt();
+            let distance = Vec3::distance(Vec3::new(x, y, z), Vec3::new(cx, cy, cz));
             assert!(distance <= sphere.radius + 1e-4);
         }
     }

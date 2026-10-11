@@ -3,13 +3,14 @@ name = "polypath"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-keywords = [".obj", "mesh loader"]
+keywords = [".obj", "gltf", "mesh loader"]
 categories = ["graphics", "parsing", "parser-implementations"]
 repository = "https://github.com/wutterfly/polypath.git"
-description = "A very basic file parser for .obj and .mtl files."
+description = "A very basic file parser for .obj and .mtl files, and a loader for glTF 2.0 files."
 exclude = ["examples/*", "tests/*", "benches/*", "meshes/*"]
 
 [dependencies]
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "names"] }
 rustc-hash = "2.1.1"
 
 [dev-dependencies]
