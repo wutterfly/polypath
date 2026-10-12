@@ -1,7 +1,10 @@
 //! How good the meshlets of a mesh are.
 //!
 //! `cargo run --release --example meshlets -- <file.obj | file.gltf | file.glb> [cone threshold]
-//! [most vertices] [most triangles]`
+//! [most vertices] [most triangles] [--merge]`
+//!
+//! `--merge` puts small meshlets that do not touch together (`merge_apart` of
+//! [`polypath::meshlet::build`]).
 //!
 //! An `.obj` is split twice: with the triangles in the order of the file, and after
 //! [`polypath::opt::optimize_vertex_order`]. A glTF is split in the order of its indices.
@@ -19,7 +22,8 @@ use polypath::{
 };
 
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let merge = std::env::args().any(|arg| arg == "--merge");
+    let mut args = std::env::args().skip(1).filter(|arg| arg != "--merge");
     let path = args.next().expect("a file to read");
     let threshold: f32 = args.next().map_or(0.9, |arg| arg.parse().expect("a number"));
     let mut limit = |most: usize| args.next().map_or(most, |arg| arg.parse().expect("a number"));
@@ -28,7 +32,7 @@ fn main() {
         triangles: limit(Limits::MAX.triangles),
     };
 
-    println!("cone threshold {threshold}, at most {limits:?}");
+    println!("cone threshold {threshold}, at most {limits:?}, merge apart: {merge}");
     if std::path::Path::new(&path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("obj"))
@@ -38,20 +42,26 @@ fn main() {
 
         let (indices, vertices) = opt::indexed_vertices(&soup);
         let indices: Vec<u32> = indices.iter().map(|&i| u32::try_from(i).unwrap()).collect();
-        let meshlets = meshlet::build(&indices, &vertices, limits, threshold);
+        let meshlets = meshlet::build(&indices, &vertices, limits, threshold, merge);
         summary("in the order of the file", &meshlets.records, indices.len() / 3, limits);
 
         let ordered = opt::optimize_vertex_order(soup);
         let (indices, vertices) = opt::indexed_vertices(&ordered);
         let indices: Vec<u32> = indices.iter().map(|&i| u32::try_from(i).unwrap()).collect();
-        let meshlets = meshlet::build(&indices, &vertices, limits, threshold);
+        let meshlets = meshlet::build(&indices, &vertices, limits, threshold, merge);
         summary("after optimize_vertex_order", &meshlets.records, indices.len() / 3, limits);
     } else {
         let scene = GltfScene::read_from_file(&path).expect("a readable glTF");
         let mut all = Vec::new();
         for mesh in &scene.meshes {
             for primitive in &mesh.primitives {
-                all.push(meshlet::build(&primitive.indices, &primitive.positions, limits, threshold));
+                all.push(meshlet::build(
+                    &primitive.indices,
+                    &primitive.positions,
+                    limits,
+                    threshold,
+                    merge,
+                ));
             }
         }
         let triangles: Vec<usize> = scene

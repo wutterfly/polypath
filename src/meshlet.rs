@@ -1,4 +1,5 @@
-//! Meshlets: a mesh split into small clusters of triangles that touch.
+//! Meshlets: a mesh split into small clusters of triangles that touch (or, if asked for, that
+//! are near each other: see [`build`]).
 //!
 //! A meshlet has at most [`MAX_VERTICES`] vertices and [`MAX_TRIANGLES`] triangles (or fewer, as
 //! [`Limits`] says), a sphere around
@@ -51,6 +52,56 @@ fn fits_cone(normals: &[Vec3], next: Vec3, threshold: f32) -> bool {
     let all = normals.iter().chain(std::iter::once(&next));
     let axis = average_direction(all.clone());
     smallest_dot(&axis, all) >= threshold
+}
+
+/// Whether the directions `normals` and `more` all are within `threshold` (a dot product) of their
+/// average.
+fn fit_cone_together(normals: &[Vec3], more: &[Vec3], threshold: f32) -> bool {
+    let all = normals.iter().chain(more);
+    let axis = average_direction(all.clone());
+    smallest_dot(&axis, all) >= threshold
+}
+
+/// Where in space a point is, as a number whose order follows a Z-order curve: points that are near
+/// each other get numbers that are near each other (not always, but mostly). `low` and `size` are
+/// the box the points are in (a side of 0 is a flat box).
+fn morton_code(point: (f32, f32, f32), low: [f32; 3], size: [f32; 3]) -> u32 {
+    // 10 bits for each of the three axes.
+    let bits = |value: f32, low: f32, size: f32| -> u32 {
+        let unit = if size > 0.0 {
+            ((value - low) / size).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0 to 1023
+        let scaled = (unit * 1023.0) as u32;
+        // Spread the 10 bits so that two zeros follow every one.
+        let mut spread = scaled & 0x3ff;
+        spread = (spread | (spread << 16)) & 0x0300_00ff;
+        spread = (spread | (spread << 8)) & 0x0300_f00f;
+        spread = (spread | (spread << 4)) & 0x030c_30c3;
+        (spread | (spread << 2)) & 0x0924_9249
+    };
+    bits(point.0, low[0], size[0])
+        | (bits(point.1, low[1], size[1]) << 1)
+        | (bits(point.2, low[2], size[2]) << 2)
+}
+
+/// Which way a meshlet mostly faces, as a small number: the axis its cone points along most (two
+/// numbers for each of the three axes, one for each side), or 6 if it has no direction.
+fn facing_bucket(axis: (f32, f32, f32)) -> u8 {
+    let (x, y, z) = (axis.0.abs(), axis.1.abs(), axis.2.abs());
+    if x == 0.0 && y == 0.0 && z == 0.0 {
+        return 6;
+    }
+    let (number, negative) = if x >= y && x >= z {
+        (0, axis.0 < 0.0)
+    } else if y >= z {
+        (1, axis.1 < 0.0)
+    } else {
+        (2, axis.2 < 0.0)
+    };
+    number * 2 + u8::from(negative)
 }
 
 /// The most vertices a meshlet of [`build`] has.
@@ -185,6 +236,16 @@ impl Meshlets {
 /// normal is `(b - a) x (c - a)`. A triangle with no area is kept in whichever meshlet it comes in,
 /// but does not count for the cone.
 ///
+/// With `merge_apart` the meshlets that were made that way are then put together again where
+/// they are small, whether they touch or not: a mesh that is made of many separate pieces (the
+/// panels of a building, each a quad of its own) has meshlets of a few triangles otherwise, which
+/// is a lot of them to test and to draw. They are put in order by the way they face and then by
+/// where they are (along a Z-order curve), and each is added to the one before while the vertices,
+/// the triangles and the cone still fit. The result is a meshlet that is several pieces which face
+/// the same way and are near each other. Meshlets that were full are left as they are, and so is a
+/// mesh that is one connected surface, for the most part; the cost is a bigger sphere for the
+/// pieces that were put together, which culls a little less sharply.
+///
 /// # Panics
 /// If `indices.len()` is not a multiple of 3, if an index is not a vertex of `vertices`, if
 /// there are more than `u32::MAX` triangles or vertices, or if `limits` are not within
@@ -199,6 +260,7 @@ pub fn build<V: Vertex>(
     vertices: &[V],
     limits: Limits,
     cone_threshold: f32,
+    merge_apart: bool,
 ) -> Meshlets {
     assert_eq!(
         indices.len() % 3,
@@ -385,6 +447,11 @@ pub fn build<V: Vertex>(
         builder.close();
     }
 
+    if merge_apart {
+        let built = std::mem::take(&mut builder.out);
+        builder.out.indices.reserve(built.indices.len());
+        builder.merge_apart(&built);
+    }
     builder.out
 }
 
@@ -544,6 +611,72 @@ impl<V: Vertex> Builder<'_, V> {
         }
     }
 
+    /// Puts the meshlets of `built` together again where they are small (see [`build`]): the
+    /// result is in `self.out`, which has to be empty.
+    ///
+    /// The meshlets are sorted by the way they face, then along a Z-order curve through their
+    /// centres, and one is added to the meshlet being made while it fits (the limits, and the
+    /// cone of all of the triangles together); when it does not fit the meshlet is closed and the
+    /// next one starts.
+    fn merge_apart(&mut self, built: &Meshlets) {
+        let records = &built.records;
+        // The box of the centres, for the curve.
+        let mut low = [f32::MAX; 3];
+        let mut high = [f32::MIN; 3];
+        for record in records {
+            let c = record.bounding.center;
+            for (axis, value) in <[f32; 3]>::from(c).into_iter().enumerate() {
+                low[axis] = low[axis].min(value);
+                high[axis] = high[axis].max(value);
+            }
+        }
+        let size = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
+
+        let mut order: Vec<(u8, u32, usize)> = records
+            .iter()
+            .enumerate()
+            .map(|(at, record)| {
+                (
+                    facing_bucket(record.cone_axis),
+                    morton_code(record.bounding.center, low, size),
+                    at,
+                )
+            })
+            .collect();
+        order.sort_unstable();
+
+        let mut normals: Vec<Vec3> = Vec::with_capacity(self.limits.triangles);
+        for &(_, _, at) in &order {
+            let record = &records[at];
+            let first = 3 * record.triangle_start as usize;
+            let last = first + 3 * record.triangle_count as usize;
+            let faces = built.indices[first..last].as_chunks::<3>().0;
+
+            normals.clear();
+            normals.extend(faces.iter().filter_map(|&face| self.face_normal(face)));
+
+            if !self.triangles.is_empty() {
+                let vertices = record.vertex_start as usize
+                    ..(record.vertex_start + record.vertex_count) as usize;
+                let added = built.vertices[vertices]
+                    .iter()
+                    .filter(|&&vertex| self.local[vertex as usize] == NOT_IN)
+                    .count();
+                let fits = self.triangles.len() / 3 + faces.len() <= self.limits.triangles
+                    && self.members.len() + added <= self.limits.vertices
+                    && fit_cone_together(&self.normals, &normals, self.threshold);
+                if !fits {
+                    self.close();
+                }
+            }
+            for &face in faces {
+                let normal = self.face_normal(face);
+                self.push(face, normal);
+            }
+        }
+        self.close();
+    }
+
     /// Finishes the meshlet being made (if there is one), and starts an empty one.
     fn close(&mut self) {
         if self.triangles.is_empty() {
@@ -593,6 +726,7 @@ impl<V: Vertex> Builder<'_, V> {
     clippy::tuple_array_conversions,
     clippy::many_single_char_names,
     clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
     reason = "plain test code: clearer than the fused forms"
 )]
 mod flat_tests {
@@ -718,7 +852,7 @@ mod flat_tests {
             vertices: 16,
             triangles: 12,
         };
-        let meshlets = build(&indices, &positions, limits, 0.5);
+        let meshlets = build(&indices, &positions, limits, 0.5, false);
         check(&indices, &positions, &meshlets);
 
         for record in &meshlets.records {
@@ -727,7 +861,7 @@ mod flat_tests {
         }
         // 800 triangles, 12 at most each; and more of them than with the most there is room for.
         assert!(meshlets.len() >= 67);
-        assert!(meshlets.len() > build(&indices, &positions, Limits::MAX, 0.5).len());
+        assert!(meshlets.len() > build(&indices, &positions, Limits::MAX, 0.5, false).len());
     }
 
     #[test]
@@ -751,14 +885,103 @@ mod flat_tests {
                 triangles: MAX_TRIANGLES + 1,
             },
         ] {
-            let result = std::panic::catch_unwind(|| build(&indices, &positions, limits, 0.5));
+            let result = std::panic::catch_unwind(|| build(&indices, &positions, limits, 0.5, false));
             assert!(result.is_err(), "{limits:?}");
         }
     }
 
+    /// `n` separate quads (4 vertices of their own, 2 triangles) in a row along x, facing +y, with
+    /// a gap between them: they touch nothing.
+    fn quads(n: u32) -> (Vec<u32>, Vec<[f32; 3]>) {
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        for quad in 0..n {
+            let x = quad as f32 * 2.0;
+            let first = positions.len() as u32;
+            positions.extend_from_slice(&[
+                [x, 0.0, 0.0],
+                [x, 0.0, 1.0],
+                [x + 1.0, 0.0, 0.0],
+                [x + 1.0, 0.0, 1.0],
+            ]);
+            indices.extend_from_slice(&[
+                first,
+                first + 1,
+                first + 2,
+                first + 2,
+                first + 1,
+                first + 3,
+            ]);
+        }
+        (indices, positions)
+    }
+
+    #[test]
+    fn pieces_that_do_not_touch_are_one_meshlet_each_unless_asked_to_merge() {
+        let (indices, positions) = quads(40);
+
+        let apart = build(&indices, &positions, Limits::MAX, 0.5, false);
+        let merged = build(&indices, &positions, Limits::MAX, 0.5, true);
+
+        // 40 quads that touch nothing: a meshlet each, or 16 quads (64 vertices) at a time.
+        assert_eq!(apart.len(), 40);
+        assert_eq!(merged.len(), 3);
+        check(&indices, &positions, &merged);
+        assert_eq!(merged.records[0].vertex_count, 64);
+        assert_eq!(merged.records[0].triangle_count, 32);
+    }
+
+    #[test]
+    fn merged_meshlets_still_have_every_triangle_once_and_a_cone_that_holds() {
+        let (indices, positions) = quads(100);
+
+        let merged = build(&indices, &positions, Limits::MAX, 0.5, true);
+
+        check(&indices, &positions, &merged);
+        for record in &merged.records {
+            // Flat quads facing up: a cone of nothing.
+            assert!(record.cone_cutoff < 1e-3);
+            assert!(record.vertex_count as usize <= MAX_VERTICES);
+        }
+    }
+
+    #[test]
+    fn pieces_that_face_apart_are_not_merged() {
+        // Quads along x, alternately facing up (+y) and the other way: a cone can not hold both.
+        let (mut indices, positions) = quads(8);
+        for (quad, face) in indices.chunks_exact_mut(6).enumerate() {
+            if quad % 2 == 1 {
+                // The other winding: the quad faces down.
+                face.swap(1, 2);
+                face.swap(4, 5);
+            }
+        }
+
+        let merged = build(&indices, &positions, Limits::MAX, 0.5, true);
+
+        check(&indices, &positions, &merged);
+        // Four up and four down, each kind in meshlets of its own.
+        assert_eq!(merged.len(), 2);
+        for record in &merged.records {
+            assert_eq!(record.triangle_count, 8);
+        }
+    }
+
+    #[test]
+    fn a_connected_surface_is_the_same_with_or_without_merging_where_it_is_full() {
+        let (indices, positions) = grid(20);
+
+        let plain = build(&indices, &positions, Limits::MAX, 0.5, false);
+        let merged = build(&indices, &positions, Limits::MAX, 0.5, true);
+
+        check(&indices, &positions, &merged);
+        // Merging never makes more meshlets.
+        assert!(merged.len() <= plain.len());
+    }
+
     #[test]
     fn nothing_makes_nothing() {
-        let meshlets = build::<[f32; 3]>(&[], &[], Limits::MAX, 0.5);
+        let meshlets = build::<[f32; 3]>(&[], &[], Limits::MAX, 0.5, false);
         assert!(meshlets.is_empty());
         assert!(meshlets.indices.is_empty());
     }
@@ -766,7 +989,7 @@ mod flat_tests {
     #[test]
     fn a_flat_grid_is_flat_meshlets_that_face_up() {
         let (indices, positions) = grid(20);
-        let meshlets = build(&indices, &positions, Limits::MAX, 0.5);
+        let meshlets = build(&indices, &positions, Limits::MAX, 0.5, false);
         check(&indices, &positions, &meshlets);
 
         // 800 triangles, 124 at most each.
@@ -782,7 +1005,7 @@ mod flat_tests {
     fn a_sphere_is_cut_where_it_bends_too_much() {
         let (indices, positions) = sphere(24, 32);
         let threshold = 0.9;
-        let meshlets = build(&indices, &positions, Limits::MAX, threshold);
+        let meshlets = build(&indices, &positions, Limits::MAX, threshold, false);
         check(&indices, &positions, &meshlets);
 
         for record in &meshlets.records {
@@ -843,7 +1066,7 @@ mod flat_tests {
         // grid that come one after another would be 40 units long, a radius of 20.
         let (indices, positions) = grid(40);
         for order in [indices.clone(), shuffled(&indices)] {
-            let meshlets = build(&order, &positions, Limits::MAX, 0.5);
+            let meshlets = build(&order, &positions, Limits::MAX, 0.5, false);
             check(&order, &positions, &meshlets);
             for record in &meshlets.records {
                 assert!(record.bounding.radius < 10.0, "{}", record.bounding.radius);
@@ -873,7 +1096,7 @@ mod flat_tests {
             }
         }
         assert!(positions.len() > 25, "the vertices were doubled");
-        let meshlets = build(&indices, &positions, Limits::MAX, 0.5);
+        let meshlets = build(&indices, &positions, Limits::MAX, 0.5, false);
         check(&indices, &positions, &meshlets);
         assert_eq!(meshlets.len(), 1);
     }
@@ -881,11 +1104,11 @@ mod flat_tests {
     #[test]
     fn a_triangle_with_no_area_does_not_split_a_meshlet() {
         let (mut indices, positions) = grid(4);
-        let without = build(&indices, &positions, Limits::MAX, 0.5);
+        let without = build(&indices, &positions, Limits::MAX, 0.5, false);
         // Three corners that are one vertex, in the middle of the list.
         let middle = indices.len() / 2 / 3 * 3;
         indices.splice(middle..middle, [5, 5, 5]);
-        let with = build(&indices, &positions, Limits::MAX, 0.5);
+        let with = build(&indices, &positions, Limits::MAX, 0.5, false);
         check(&indices, &positions, &with);
         assert_eq!(with.len(), without.len());
     }
@@ -895,7 +1118,7 @@ mod flat_tests {
         // A strip where a corner is repeated: [0, 0, 1] has two vertices, not three.
         let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
         let indices = [0, 0, 1, 0, 1, 2];
-        let meshlets = build(&indices, &positions, Limits::MAX, 0.5);
+        let meshlets = build(&indices, &positions, Limits::MAX, 0.5, false);
         check(&indices, &positions, &meshlets);
         assert_eq!(meshlets.len(), 1);
         assert_eq!(meshlets.records[0].vertex_count, 3);
@@ -906,7 +1129,7 @@ mod flat_tests {
         let (indices, positions) = sphere(8, 8);
         // Out of range values are made to fit, not refused.
         for threshold in [-1.0, 0.0, 5.0, f32::NAN] {
-            let meshlets = build(&indices, &positions, Limits::MAX, threshold);
+            let meshlets = build(&indices, &positions, Limits::MAX, threshold, false);
             check(&indices, &positions, &meshlets);
         }
     }
