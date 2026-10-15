@@ -25,7 +25,7 @@ use crate::{
 
 /// The version of the algorithm that makes the levels and of the format of the file: a chain that
 /// was baked with another is not read.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 3;
 
 /// The first four bytes of a file of levels.
 const MAGIC: [u8; 4] = *b"PLOD";
@@ -53,6 +53,9 @@ pub fn content_key<V: Vertex>(indices: &[u32], vertices: &[V], recipe: &Recipe) 
     hasher.write_usize(settings.levels);
     hasher.write_usize(settings.min_triangles);
     hasher.write_u32(settings.border_weight.to_bits());
+    hasher.write_u8(u8::from(settings.lock_borders));
+    hasher.write_u32(settings.normal_weight.to_bits());
+    hasher.write_u32(settings.uv_weight.to_bits());
     hasher.write_u32(settings.seam_weight.to_bits());
     hasher.write_usize(recipe.limits.vertices);
     hasher.write_usize(recipe.limits.triangles);
@@ -68,6 +71,22 @@ pub fn content_key<V: Vertex>(indices: &[u32], vertices: &[V], recipe: &Recipe) 
         hasher.write_u32(x.to_bits());
         hasher.write_u32(y.to_bits());
         hasher.write_u32(z.to_bits());
+        // What a level keeps of the vertex besides its place.
+        if let Some(normal) = vertex.normal() {
+            hasher.write_u8(1);
+            for value in <[f32; 3]>::from(normal) {
+                hasher.write_u32(value.to_bits());
+            }
+        } else {
+            hasher.write_u8(0);
+        }
+        if let Some((u, v)) = vertex.texture_coord() {
+            hasher.write_u8(1);
+            hasher.write_u32(u.to_bits());
+            hasher.write_u32(v.to_bits());
+        } else {
+            hasher.write_u8(0);
+        }
     }
     hasher.finish()
 }
@@ -362,6 +381,9 @@ mod tests {
         assert_ne!(content_key(&indices, &positions, &other), key);
         other = recipe();
         other.settings.seam_weight = 5.0;
+        assert_ne!(content_key(&indices, &positions, &other), key);
+        other = recipe();
+        other.settings.lock_borders = true;
         assert_ne!(content_key(&indices, &positions, &other), key);
         assert!(levels_from_bytes(&bytes, key ^ 1).is_none());
 

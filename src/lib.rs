@@ -99,12 +99,35 @@ impl From<ParseIntError> for Error {
 
 pub trait Vertex {
     fn position(&self) -> (f32, f32, f32);
+
+    /// The surface normal at the vertex, if it has one. Simplification ([`lod`]) keeps what it
+    /// can of it: a vertex that is merged into another has its shading taken from that one.
+    #[inline]
+    fn normal(&self) -> Option<(f32, f32, f32)> {
+        None
+    }
+
+    /// The texture coordinates of the vertex, if it has them (kept like the normal).
+    #[inline]
+    fn texture_coord(&self) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 impl Vertex for VertexTextureData {
     #[inline]
     fn position(&self) -> (f32, f32, f32) {
         self.vertex.position
+    }
+
+    #[inline]
+    fn normal(&self) -> Option<(f32, f32, f32)> {
+        self.vertex.normal
+    }
+
+    #[inline]
+    fn texture_coord(&self) -> Option<(f32, f32)> {
+        self.vertex.texture_coord
     }
 }
 

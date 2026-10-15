@@ -21,10 +21,27 @@
 //! then rewritten to use their own vertex of the place they go to. A corner of a cube (three
 //! sides) is not collapsed onto a place that has two of them: the cube stays a cube.
 //!
+//! # Shading
+//!
+//! A level has the vertices of the mesh, so a triangle of it that is bigger than the ones it
+//! replaced interpolates the normals and texture coordinates of its corners over a longer way.
+//! Where those change fast (a rounded body of many thin triangles, a bevel, a pattern) that is a
+//! different picture even if the surface is where it was. When the vertices have normals and
+//! texture coordinates ([`Vertex::normal`], [`Vertex::texture_coord`]), they are part of the
+//! error: every vertex remembers, for each of them, how it varied over the triangles that were
+//! merged into it (the way the planes are remembered: a linear function of the position for each
+//! triangle, summed), and a collapse costs how far the vertex it goes to is from those.
+//! [`Settings::normal_weight`] and [`Settings::uv_weight`] say how much that is in the units of
+//! the positions, as a part of the size of the mesh. The error of a level ([`Level::error`])
+//! includes it, so a renderer that shows a level when its error is under a pixel shows it when the
+//! shading is off by under about that too.
+//!
 //! # What is kept
 //!
 //! - The open border of a mesh (edges with one triangle): the planes that hold it are weighted
-//!   ([`Settings::border_weight`]), and a place on a border is only collapsed along it.
+//!   ([`Settings::border_weight`]), and a place on a border is only collapsed along it. With
+//!   [`Settings::lock_borders`] those places cannot move, so separately simplified parts keep
+//!   their original shared outline.
 //! - The orientation: a collapse that turns a triangle over (its normal moves more than
 //!   [`MAX_TURN`] from where it was) is not done, and neither is one that makes the surface touch
 //!   itself at a point or an edge.
@@ -64,8 +81,22 @@ pub struct Settings {
     /// No level has fewer triangles than this: the chain ends there.
     pub min_triangles: usize,
     /// How much it matters that the open border of the mesh stays where it is, against any one
-    /// plane of a triangle (which is 1). A hundred is a border that does not move.
+    /// plane of a triangle (which is 1). A hundred strongly resists movement; only
+    /// `lock_borders` guarantees the border stays fixed.
     pub border_weight: f32,
+    /// Keep every vertex on an open border at its original position. Use this when adjacent
+    /// parts are simplified separately: a weighted border alone can move and expose cracks.
+    /// Interior vertices may still collapse onto a locked border. False by default, so a
+    /// standalone open surface can simplify its outline with `border_weight` instead.
+    pub lock_borders: bool,
+    /// How much a change of the normal counts in the error, as a part of the size of the mesh (the
+    /// diagonal of its box) for a normal that is turned by 1 (about 60 degrees): 0.1 means that
+    /// 10 degrees is as much as 1.7 percent of the size. 0 leaves the normals out. Used when the
+    /// vertices have normals.
+    pub normal_weight: f32,
+    /// The same for the texture coordinates: a change of 1 (the whole texture) counts as this
+    /// part of the size of the mesh. 0 leaves them out. Used when the vertices have them.
+    pub uv_weight: f32,
     /// What a side of a seam costs that has no edge to the place it is collapsed onto, in squared
     /// distances of the collapse (a collapse of length `d` with one such side costs
     /// `seam_weight * d * d` more). The side then takes whichever vertex of that place is the
@@ -84,8 +115,39 @@ impl Default for Settings {
             levels: 6,
             min_triangles: 64,
             border_weight: 100.0,
+            lock_borders: false,
+            normal_weight: 0.1,
+            uv_weight: 1.0,
             seam_weight: 1.0,
         }
+    }
+}
+
+/// A vertex with a normal and texture coordinates besides its position (see "Shading" above).
+///
+/// Any [`Vertex`] that has them does as well; this is one for a caller that has the lists and not
+/// a type of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Corner {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub texture_coord: [f32; 2],
+}
+
+impl Vertex for Corner {
+    #[inline]
+    fn position(&self) -> (f32, f32, f32) {
+        <(f32, f32, f32)>::from(self.position)
+    }
+
+    #[inline]
+    fn normal(&self) -> Option<(f32, f32, f32)> {
+        Some(<(f32, f32, f32)>::from(self.normal))
+    }
+
+    #[inline]
+    fn texture_coord(&self) -> Option<(f32, f32)> {
+        Some(<(f32, f32)>::from(self.texture_coord))
     }
 }
 
@@ -304,8 +366,228 @@ struct Plan {
     /// The triangles that stay, with the corner that moves and the vertex it is moved to.
     moved: Vec<(u32, usize, u32)>,
     /// How far the surface goes from what it was: the mean squared distance of the new place to
-    /// the planes of the triangles (not the borders' planes).
+    /// the planes of the triangles (not the borders' planes), and what its normals and texture
+    /// coordinates are off by.
     error: f64,
+    /// The vertices that are merged: each vertex of `from` and the vertex of `to` that takes it.
+    merged: Vec<(u32, u32)>,
+}
+
+/// How many numbers a vertex has that are kept: the normal (3) and the texture coordinates (2).
+const CHANNELS: usize = 5;
+
+/// What one number of a vertex (a channel) was over the triangles that were merged into a vertex:
+/// each triangle has it as a linear function of the position, `g . p + d`, and what is kept is the
+/// sum of the squares of how far that is from a value `a` at the point `p`, as a quadric in `p`
+/// and `a` (weighted by the area, like the planes): `p^T G p + 2 h . p + c - 2 a (s . p + t) +
+/// a^2 w`.
+#[derive(Debug, Clone, Copy, Default)]
+struct ChannelTerms {
+    /// `G`: the upper triangle of the sum of `g g^T`.
+    gg: [f64; 6],
+    /// `h`: the sum of `d g`.
+    gd: [f64; 3],
+    /// `c`: the sum of `d^2`.
+    dd: f64,
+    /// `s`: the sum of `g`.
+    g1: [f64; 3],
+    /// `t`: the sum of `d`.
+    d1: f64,
+}
+
+/// The channels of one vertex, and the area they stand for.
+#[derive(Debug, Clone, Copy, Default)]
+struct VertexTerms {
+    channels: [ChannelTerms; CHANNELS],
+    weight: f64,
+}
+
+impl VertexTerms {
+    fn add(&mut self, other: &Self) {
+        self.weight += other.weight;
+        for (mine, theirs) in self.channels.iter_mut().zip(&other.channels) {
+            for (a, b) in mine.gg.iter_mut().zip(theirs.gg) {
+                *a += b;
+            }
+            for (a, b) in mine.gd.iter_mut().zip(theirs.gd) {
+                *a += b;
+            }
+            for (a, b) in mine.g1.iter_mut().zip(theirs.g1) {
+                *a += b;
+            }
+            mine.dd += theirs.dd;
+            mine.d1 += theirs.d1;
+        }
+    }
+}
+
+/// The normals and the texture coordinates of the vertices, and what is remembered of them.
+struct Attributes {
+    /// The numbers of each vertex of the mesh (the normal, then the texture coordinates).
+    values: Vec<[f64; CHANNELS]>,
+    /// What each vertex stands for.
+    terms: Vec<VertexTerms>,
+    /// Which channels are kept (the ones that are asked for, and that are not the same everywhere).
+    active: [bool; CHANNELS],
+    /// The square of what a unit of each channel is in the units of the positions.
+    scale_squared: [f64; CHANNELS],
+    /// What the positions are taken from, so that they are small numbers.
+    origin: [f64; 3],
+}
+
+impl Attributes {
+    /// `None` if the vertices have nothing to keep (or it is not asked for).
+    fn new<V: Vertex>(vertices: &[V], places: &[[f64; 3]], settings: &Settings) -> Option<Self> {
+        let normal_weight = f64::from(settings.normal_weight.max(0.0));
+        let uv_weight = f64::from(settings.uv_weight.max(0.0));
+        if normal_weight <= 0.0 && uv_weight <= 0.0 {
+            return None;
+        }
+        let mut values = vec![[0.0; CHANNELS]; vertices.len()];
+        let mut seen = [false; CHANNELS];
+        let mut first = [0.0; CHANNELS];
+        let mut varies = [false; CHANNELS];
+        for (vertex, value) in vertices.iter().zip(&mut values) {
+            let normal = vertex.normal().map(|n| <[f32; 3]>::from(n).map(f64::from));
+            let uv = vertex.texture_coord().map(|t| <[f32; 2]>::from(t).map(f64::from));
+            if let Some(normal) = normal {
+                value[..3].copy_from_slice(&normal);
+            }
+            if let Some(uv) = uv {
+                value[3] = uv[0];
+                value[4] = uv[1];
+            }
+            for channel in 0..CHANNELS {
+                let has = if channel < 3 { normal.is_some() } else { uv.is_some() };
+                if !has || !value[channel].is_finite() {
+                    continue;
+                }
+                if seen[channel] {
+                    varies[channel] |= (value[channel] - first[channel]).abs() > 1.0e-9;
+                } else {
+                    seen[channel] = true;
+                    first[channel] = value[channel];
+                }
+            }
+        }
+        let weights = [normal_weight, normal_weight, normal_weight, uv_weight, uv_weight];
+        let active: [bool; CHANNELS] = std::array::from_fn(|channel| {
+            varies[channel] && weights[channel] > 0.0
+        });
+        if !active.iter().any(|&on| on) {
+            return None;
+        }
+        // The size of the mesh: the diagonal of the box around its places.
+        let (mut low, mut high) = ([f64::MAX; 3], [f64::MIN; 3]);
+        for place in places.iter().filter(|place| place.iter().all(|v| v.is_finite())) {
+            for axis in 0..3 {
+                low[axis] = low[axis].min(place[axis]);
+                high[axis] = high[axis].max(place[axis]);
+            }
+        }
+        if low[0] > high[0] {
+            return None;
+        }
+        let extent = length(sub(high, low));
+        let origin = std::array::from_fn(|axis| f64::midpoint(low[axis], high[axis]));
+        let scale_squared =
+            std::array::from_fn(|channel| (weights[channel] * extent).powi(2));
+        Some(Self {
+            values,
+            terms: vec![VertexTerms::default(); vertices.len()],
+            active,
+            scale_squared,
+            origin,
+        })
+    }
+
+    /// Adds a triangle (its corners are vertices of the mesh) to what its three vertices remember.
+    fn add_triangle(&mut self, corners: [u32; 3], positions: [[f64; 3]; 3], area: f64) {
+        let [p0, p1, p2] = positions.map(|p| sub(p, self.origin));
+        let (e1, e2) = (sub(p1, p0), sub(p2, p0));
+        let normal = cross(e1, e2);
+        let size = dot(normal, normal);
+        if size <= 0.0 {
+            return;
+        }
+        // The gradient of a number that is `a0`, `a1` and `a2` at the corners: `g . e1 = a1 - a0`,
+        // `g . e2 = a2 - a0` and no change across the triangle.
+        let (across1, across2) = (cross(e2, normal), cross(normal, e1));
+        let mut triangle = VertexTerms {
+            weight: area,
+            ..VertexTerms::default()
+        };
+        for channel in 0..CHANNELS {
+            if !self.active[channel] {
+                continue;
+            }
+            let a = corners.map(|corner| self.values[corner as usize][channel]);
+            let (da1, da2) = (a[1] - a[0], a[2] - a[0]);
+            let g = [
+                (da1 * across1[0] + da2 * across2[0]) / size,
+                (da1 * across1[1] + da2 * across2[1]) / size,
+                (da1 * across1[2] + da2 * across2[2]) / size,
+            ];
+            let d = a[0] - dot(g, p0);
+            let terms = &mut triangle.channels[channel];
+            terms.gg = [
+                area * g[0] * g[0],
+                area * g[0] * g[1],
+                area * g[0] * g[2],
+                area * g[1] * g[1],
+                area * g[1] * g[2],
+                area * g[2] * g[2],
+            ];
+            terms.gd = [area * d * g[0], area * d * g[1], area * d * g[2]];
+            terms.dd = area * d * d;
+            terms.g1 = [area * g[0], area * g[1], area * g[2]];
+            terms.d1 = area * d;
+        }
+        for corner in corners {
+            self.terms[corner as usize].add(&triangle);
+        }
+    }
+
+    /// How far the vertices that `merged` goes to are, at `target`, from what the vertices that
+    /// are merged into them were: the mean squared difference of their normals and texture
+    /// coordinates in the units of the positions squared.
+    fn error(&self, merged: &[(u32, u32)], target: [f64; 3]) -> f64 {
+        let p = sub(target, self.origin);
+        let (mut sum, mut weight) = (0.0, 0.0);
+        for &(from, to) in merged {
+            let mut terms = self.terms[from as usize];
+            terms.add(&self.terms[to as usize]);
+            weight += terms.weight;
+            for channel in 0..CHANNELS {
+                if !self.active[channel] {
+                    continue;
+                }
+                let t = &terms.channels[channel];
+                let a = self.values[to as usize][channel];
+                let value = t.gg[0] * p[0] * p[0]
+                    + 2.0 * t.gg[1] * p[0] * p[1]
+                    + 2.0 * t.gg[2] * p[0] * p[2]
+                    + t.gg[3] * p[1] * p[1]
+                    + 2.0 * t.gg[4] * p[1] * p[2]
+                    + t.gg[5] * p[2] * p[2]
+                    + 2.0 * dot(t.gd, p)
+                    + t.dd
+                    - 2.0 * a * (dot(t.g1, p) + t.d1)
+                    + a * a * terms.weight;
+                // A sum of squares: a hair under 0 is rounding.
+                sum += value.max(0.0) * self.scale_squared[channel];
+            }
+        }
+        if weight > 0.0 { sum / weight } else { 0.0 }
+    }
+
+    /// The vertices that are merged: what each remembers goes to the one it goes to.
+    fn merge(&mut self, merged: &[(u32, u32)]) {
+        for &(from, to) in merged {
+            let moved = self.terms[from as usize];
+            self.terms[to as usize].add(&moved);
+        }
+    }
 }
 
 /// The mesh while it is made smaller.
@@ -331,6 +613,10 @@ struct State {
     worst: f64,
     /// See [`Settings::seam_weight`].
     seam_weight: f64,
+    /// Original open-border places that must not move, even when their neighbours change.
+    locked: Vec<bool>,
+    /// What the normals and texture coordinates were, if they are kept.
+    attributes: Option<Attributes>,
 }
 
 impl State {
@@ -397,9 +683,12 @@ impl State {
             heap: BinaryHeap::new(),
             worst: 0.0,
             seam_weight: 0.0,
+            locked: vec![false; place_count],
+            attributes: None,
         };
+        state.attributes = Attributes::new(vertices, &state.positions, settings);
         state.seam_weight = f64::from(settings.seam_weight.max(0.0));
-        state.make_quadrics(f64::from(settings.border_weight.max(0.0)));
+        state.make_quadrics(f64::from(settings.border_weight.max(0.0)), settings.lock_borders);
         state.push_all();
         state
     }
@@ -434,7 +723,7 @@ impl State {
 
     /// The quadrics of the places: the plane of each triangle at each of its three, and the planes
     /// that hold an open border (an edge with one triangle) in place.
-    fn make_quadrics(&mut self, border_weight: f64) {
+    fn make_quadrics(&mut self, border_weight: f64, lock_borders: bool) {
         let mut edge_triangles: HashMap<(u32, u32), (u32, u32), FxBuildHasher> =
             HashMap::with_hasher(FxBuildHasher);
         for triangle in 0..self.triangles.len() {
@@ -455,6 +744,9 @@ impl State {
                     self.quadrics[place as usize].add(&quadric);
                     self.surfaces[place as usize].add(&quadric);
                 }
+                if let Some(attributes) = &mut self.attributes {
+                    attributes.add_triangle(self.triangles[triangle], [a, b, c], area);
+                }
             }
             for edge in 0..3 {
                 let (a, b) = (places[edge], places[(edge + 1) % 3]);
@@ -467,6 +759,10 @@ impl State {
         for (&(a, b), &(count, triangle)) in &edge_triangles {
             if count != 1 {
                 continue;
+            }
+            if lock_borders {
+                self.locked[a as usize] = true;
+                self.locked[b as usize] = true;
             }
             let Some((normal, _)) = self.plane_of(self.places(triangle)) else {
                 continue;
@@ -592,8 +888,12 @@ impl State {
     /// What collapsing `from` onto `to` does and what it costs, or `None` if it can not be done:
     /// the places are not joined, a vertex of `from` has no edge to a vertex of `to`, it would turn
     /// a triangle over, or it would pinch the surface.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the checks of one collapse, in the order they are made, then what it costs"
+    )]
     fn plan(&self, from: u32, to: u32) -> Option<(Plan, f64)> {
-        if self.gone[from as usize] || self.gone[to as usize] {
+        if self.gone[from as usize] || self.gone[to as usize] || self.locked[from as usize] {
             return None;
         }
         let removed = self.shared(from, to);
@@ -690,10 +990,22 @@ impl State {
             return None;
         }
 
+        // Every vertex of `from` that goes, and the vertex of `to` it goes to.
+        let mut merged = vertex_map;
+        for (vertex, target) in borrowed {
+            if !merged.iter().any(|&(from_vertex, _)| from_vertex == vertex) {
+                merged.push((vertex, target));
+            }
+        }
+        let shading = self.attributes.as_ref().map_or(0.0, |attributes| {
+            attributes.error(&merged, target_position)
+        });
+
         let mut quadric = self.quadrics[from as usize];
         quadric.add(&self.quadrics[to as usize]);
         let moved_by = sub(self.positions[from as usize], target_position);
         let cost = quadric.at(target_position)
+            + shading
             + self.seam_weight * f64::from(unmatched) * dot(moved_by, moved_by);
         let mut surface = self.surfaces[from as usize];
         surface.add(&self.surfaces[to as usize]);
@@ -701,7 +1013,8 @@ impl State {
             Plan {
                 removed,
                 moved: rewrites,
-                error: surface.at(target_position),
+                error: surface.at(target_position) + shading,
+                merged,
             },
             cost,
         ))
@@ -780,6 +1093,9 @@ impl State {
         self.quadrics[to as usize].add(&moved);
         let moved = self.surfaces[from as usize];
         self.surfaces[to as usize].add(&moved);
+        if let Some(attributes) = &mut self.attributes {
+            attributes.merge(&plan.merged);
+        }
         self.worst = self.worst.max(plan.error);
         self.gone[from as usize] = true;
         self.version[to as usize] += 1;
@@ -1039,6 +1355,36 @@ mod tests {
     }
 
     #[test]
+    fn locked_borders_keep_every_original_edge_while_the_interior_simplifies() {
+        let mut mesh = grid(12);
+        // A curved outline, as on independently loaded material parts. A finite border weight
+        // can shorten it, unlike the square outline in the test above.
+        for p in &mut mesh.positions {
+            p[1] = (p[0] * 0.3).sin() + (p[2] * 0.2).cos();
+        }
+        let original = edge_counts(&mesh, &mesh.indices);
+        let boundary: Vec<_> = original
+            .iter()
+            .filter(|(_, count)| **count == 1)
+            .map(|(edge, _)| *edge)
+            .collect();
+        let settings = Settings {
+            lock_borders: true,
+            ..settings(6, 2)
+        };
+        let levels = simplify(&mesh.indices, &mesh.positions, &settings);
+        assert!(levels.len() >= 2, "interior simplification must remain possible");
+        assert!(levels.last().unwrap().0.len() < mesh.indices.len() / 2);
+        for (indices, _) in levels {
+            let current = edge_counts(&mesh, &indices);
+            for edge in &boundary {
+                assert_eq!(current.get(edge), Some(&1), "a shared border changed");
+            }
+            assert_eq!(current.values().filter(|&&count| count == 1).count(), boundary.len());
+        }
+    }
+
+    #[test]
     fn a_cube_with_a_side_of_its_own_for_each_face_stays_a_cube() {
         let mesh = cube();
         let levels = simplify(&mesh.indices, &mesh.positions, &settings(3, 2));
@@ -1119,6 +1465,72 @@ mod tests {
             let counts = edge_counts(&mesh, indices);
             assert!(counts.values().all(|&count| count == 2));
         }
+    }
+
+    fn corners(mesh: &Mesh, normal: impl Fn(usize) -> [f32; 3]) -> Vec<Corner> {
+        mesh.positions
+            .iter()
+            .enumerate()
+            .map(|(index, &position)| Corner {
+                position,
+                normal: normal(index),
+                texture_coord: [position[0] / 12.0, position[2] / 12.0],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_flat_surface_with_smooth_shading_still_goes_down_for_no_error() {
+        let mesh = grid(12);
+        // The normal is the same everywhere and the texture coordinates are a linear function of
+        // the position: a bigger triangle has all of it right.
+        let vertices = corners(&mesh, |_| [0.0, 1.0, 0.0]);
+
+        let levels = simplify(&mesh.indices, &vertices, &settings(6, 2));
+
+        let last = levels.last().unwrap();
+        assert!(last.0.len() < mesh.indices.len() / 4, "{} triangles", last.0.len() / 3);
+        assert!(last.1 < 1.0e-3, "error {}", last.1);
+    }
+
+    #[test]
+    fn shading_that_changes_on_a_flat_surface_is_part_of_the_error() {
+        let mesh = grid(12);
+        // Flat, with the normal of every other vertex turned aside: the positions say any
+        // triangle will do, the shading does not.
+        let vertices = corners(&mesh, |index| {
+            if index % 2 == 0 { [0.0, 1.0, 0.0] } else { [0.8, 0.6, 0.0] }
+        });
+        let positions_only = simplify(&mesh.indices, &mesh.positions, &settings(6, 2));
+        let shaded = simplify(&mesh.indices, &vertices, &settings(6, 2));
+
+        assert!(positions_only.last().unwrap().1 < 1.0e-3);
+        assert!(shaded.len() >= 2);
+        assert!(shaded.last().unwrap().1 > 0.1, "error {}", shaded.last().unwrap().1);
+        // And what is left out is left out: with the weights at 0 it is the positions again.
+        let off = Settings {
+            normal_weight: 0.0,
+            uv_weight: 0.0,
+            ..settings(6, 2)
+        };
+        let ignored = simplify(&mesh.indices, &vertices, &off);
+        assert_eq!(ignored, positions_only);
+    }
+
+    #[test]
+    fn the_cheaper_shading_goes_first() {
+        // The left half of a flat surface has one normal and the right half another, with a sharp
+        // change between: the collapses in the halves cost nothing and are done before any that
+        // spans the change.
+        let mesh = grid(12);
+        let vertices = corners(&mesh, |index| {
+            if mesh.positions[index][0] < 6.0 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] }
+        });
+        let levels = simplify(&mesh.indices, &vertices, &settings(1, 2));
+
+        assert_eq!(levels.len(), 2);
+        // Half the triangles are gone, and what was done cost nothing: it was in the halves.
+        assert!(levels[1].1 < 1.0e-3, "error {}", levels[1].1);
     }
 
     #[test]
