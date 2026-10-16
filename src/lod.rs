@@ -164,8 +164,12 @@ pub struct Level {
     /// it stood for, at the collapse that did the most of it so far (the planes are weighted by
     /// their area). It follows the distance, and is not a bound on it. 0 for the first level, and
     /// never less than the level before. A renderer shows a level when this, seen from where
-    /// the camera is, is under a pixel or so.
+    /// the camera is, is under a pixel or so. It includes what the normals and texture coordinates
+    /// are off by (see "Shading" above), so it is what a view that shows the shading uses.
     pub error: f32,
+    /// The same without the shading: how far the surface itself is. What a view that only needs the
+    /// shape uses (a shadow). Never more than `error`.
+    pub geometric_error: f32,
     /// The meshlets of `indices`: they index the same vertices.
     pub meshlets: Meshlets,
 }
@@ -189,13 +193,14 @@ pub fn build<V: Vertex>(
     settings: &Settings,
     (limits, cone_threshold, merge_apart): (Limits, f32, bool),
 ) -> Vec<Level> {
-    let chain = simplify(indices, vertices, settings);
+    let chain = simplify_with_errors(indices, vertices, settings);
     chain
         .into_iter()
-        .map(|(indices, error)| Level {
+        .map(|(indices, error, geometric_error)| Level {
             meshlets: meshlet::build(&indices, vertices, limits, cone_threshold, merge_apart),
             indices,
             error,
+            geometric_error,
         })
         .collect()
 }
@@ -210,6 +215,23 @@ pub fn simplify<V: Vertex>(
     vertices: &[V],
     settings: &Settings,
 ) -> Vec<(Vec<u32>, f32)> {
+    simplify_with_errors(indices, vertices, settings)
+        .into_iter()
+        .map(|(indices, error, _)| (indices, error))
+        .collect()
+}
+
+/// The same with the error of each level without the shading as well (see
+/// [`Level::geometric_error`]): the indices, the error, and the geometric error.
+///
+/// # Panics
+/// As [`simplify`].
+#[must_use]
+pub fn simplify_with_errors<V: Vertex>(
+    indices: &[u32],
+    vertices: &[V],
+    settings: &Settings,
+) -> Vec<(Vec<u32>, f32, f32)> {
     assert_eq!(
         indices.len() % 3,
         0,
@@ -219,7 +241,7 @@ pub fn simplify<V: Vertex>(
         indices.iter().all(|&index| (index as usize) < vertices.len()),
         "every index is a vertex"
     );
-    let mut levels = vec![(indices.to_vec(), 0.0)];
+    let mut levels = vec![(indices.to_vec(), 0.0, 0.0)];
 
     let mut state = State::new(indices, vertices, settings);
     let reduction = f64::from(settings.reduction.clamp(0.05, 0.95));
@@ -239,7 +261,7 @@ pub fn simplify<V: Vertex>(
             break;
         }
         before = state.alive_triangles;
-        levels.push((state.indices(), state.error()));
+        levels.push((state.indices(), state.error(), state.geometric_error()));
         if before <= settings.min_triangles {
             break;
         }
@@ -369,6 +391,8 @@ struct Plan {
     /// the planes of the triangles (not the borders' planes), and what its normals and texture
     /// coordinates are off by.
     error: f64,
+    /// The same without what the normals and texture coordinates are off by.
+    geometric: f64,
     /// The vertices that are merged: each vertex of `from` and the vertex of `to` that takes it.
     merged: Vec<(u32, u32)>,
 }
@@ -611,6 +635,8 @@ struct State {
     heap: BinaryHeap<Candidate>,
     /// The most a collapse has cost so far.
     worst: f64,
+    /// The same of the geometric part alone.
+    worst_geometric: f64,
     /// See [`Settings::seam_weight`].
     seam_weight: f64,
     /// Original open-border places that must not move, even when their neighbours change.
@@ -682,6 +708,7 @@ impl State {
             gone: vec![false; place_count],
             heap: BinaryHeap::new(),
             worst: 0.0,
+            worst_geometric: 0.0,
             seam_weight: 0.0,
             locked: vec![false; place_count],
             attributes: None,
@@ -1009,11 +1036,13 @@ impl State {
             + self.seam_weight * f64::from(unmatched) * dot(moved_by, moved_by);
         let mut surface = self.surfaces[from as usize];
         surface.add(&self.surfaces[to as usize]);
+        let geometric = surface.at(target_position);
         Some((
             Plan {
                 removed,
                 moved: rewrites,
-                error: surface.at(target_position) + shading,
+                error: geometric + shading,
+                geometric,
                 merged,
             },
             cost,
@@ -1097,6 +1126,7 @@ impl State {
             attributes.merge(&plan.merged);
         }
         self.worst = self.worst.max(plan.error);
+        self.worst_geometric = self.worst_geometric.max(plan.geometric);
         self.gone[from as usize] = true;
         self.version[to as usize] += 1;
 
@@ -1121,6 +1151,12 @@ impl State {
     #[allow(clippy::cast_possible_truncation)] // a distance as a float of the mesh's own
     fn error(&self) -> f32 {
         self.worst.sqrt() as f32
+    }
+
+    /// How far the surface is, without the shading (see [`Level::geometric_error`]).
+    #[allow(clippy::cast_possible_truncation)] // a distance as a float of the mesh's own
+    fn geometric_error(&self) -> f32 {
+        self.worst_geometric.sqrt() as f32
     }
 }
 
@@ -1507,6 +1543,10 @@ mod tests {
         assert!(positions_only.last().unwrap().1 < 1.0e-3);
         assert!(shaded.len() >= 2);
         assert!(shaded.last().unwrap().1 > 0.1, "error {}", shaded.last().unwrap().1);
+        // The surface itself is flat: the geometric error, which a shadow uses, has no shading.
+        let errors = simplify_with_errors(&mesh.indices, &vertices, &settings(6, 2));
+        let (_, error, geometric) = errors.last().unwrap();
+        assert!(*geometric < 1.0e-3 && geometric <= error, "{geometric} of {error}");
         // And what is left out is left out: with the weights at 0 it is the positions again.
         let off = Settings {
             normal_weight: 0.0,

@@ -25,7 +25,7 @@ use crate::{
 
 /// The version of the algorithm that makes the levels and of the format of the file: a chain that
 /// was baked with another is not read.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// The first four bytes of a file of levels.
 const MAGIC: [u8; 4] = *b"PLOD";
@@ -116,6 +116,7 @@ pub fn levels_to_bytes(key: u64, levels: &[Level]) -> Vec<u8> {
     put_len(&mut bytes, levels.len());
     for level in levels {
         put_f32(&mut bytes, level.error);
+        put_f32(&mut bytes, level.geometric_error);
         let meshlets = &level.meshlets;
         put_len(&mut bytes, meshlets.records.len());
         for record in &meshlets.records {
@@ -194,6 +195,7 @@ pub fn levels_from_bytes(bytes: &[u8], key: u64) -> Option<Vec<Level>> {
     let mut levels = Vec::with_capacity(count);
     for _ in 0..count {
         let error = reader.f32()?;
+        let geometric_error = reader.f32()?;
         let record_count = reader.length(48)?;
         let mut records = Vec::with_capacity(record_count);
         for _ in 0..record_count {
@@ -230,6 +232,7 @@ pub fn levels_from_bytes(bytes: &[u8], key: u64) -> Option<Vec<Level>> {
         levels.push(Level {
             indices,
             error,
+            geometric_error,
             meshlets,
         });
     }
