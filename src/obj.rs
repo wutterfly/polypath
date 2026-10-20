@@ -66,7 +66,7 @@ pub struct ObjObject {
 impl ObjObject {
     /// Reads a .obj file and returns a `ObjObject`.
     ///
-    /// # Error
+    /// # Errors
     /// - Returns an [Error][std::io::Error] if reading from file fails
     /// - Returns other errors encountered when parsing the file
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {

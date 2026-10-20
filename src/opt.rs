@@ -8,6 +8,9 @@ use crate::VertexTextureData;
 /// Optimizes the ordering of vertices.
 ///
 /// Takes a list of vertices, where every set of 3 vertices is assumed 1 triangle. Reorders the vertices for optimal cache reuse.
+///
+/// # Panics
+/// If the number of vertices is not a multiple of 3.
 pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<VertexTextureData> {
     if vertices.is_empty() {
         return Vec::new();
@@ -83,8 +86,8 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
         }
     }
 
-    debug_assert!(stack.is_empty());
-    debug_assert!(vertices.is_empty());
+    debug_assert_eq!(stack, []);
+    debug_assert_eq!(vertices, []);
     debug_assert!(adjacency.is_empty());
 
     // make sure that if we removed a duplicate face, the vertex count is still correct
@@ -97,6 +100,9 @@ pub fn optimize_vertex_order(mut vertices: Vec<VertexTextureData>) -> Vec<Vertex
 /// Returns:
 /// - a [Vec][std::vec::Vec] containing each unique vertex.
 /// - a [Vec][std::vec::Vec] containing indices into the vertex buffer. Every 3 indices build a face.
+///
+/// # Panics
+/// If the number of vertices is not a multiple of 3.
 pub fn indexed_vertices(vertices: &[VertexTextureData]) -> (Vec<usize>, Vec<VertexTextureData>) {
     let mut indices = Vec::with_capacity(vertices.len());
     let mut vertices_new = Vec::with_capacity(vertices.len() / 3);

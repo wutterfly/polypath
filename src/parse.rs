@@ -31,11 +31,15 @@ impl ObjObject {
                 break;
             }
 
-            let v_count = vertices.len() as u32;
-            let t_count = texture_coords.len() as u32;
-            let n_count = vertex_normals.len() as u32;
-
-            let line = Self::parse_line(&buffer[..read], v_count, t_count, n_count)?;
+            // A face names what it uses by a u32, so the count stops at u32::MAX (no file comes
+            // near it).
+            let count = |len: usize| u32::try_from(len).unwrap_or(u32::MAX);
+            let line = Self::parse_line(
+                &buffer[..read],
+                count(vertices.len()),
+                count(texture_coords.len()),
+                count(vertex_normals.len()),
+            )?;
             buffer.clear();
 
             match line {
@@ -58,40 +62,22 @@ impl ObjObject {
                     current_group.finish += 2;
                 }
                 Line::Group(data) => {
-                    if current_group.start == current_group.finish {
-                        current_group.name = data;
-                    } else {
-                        let finished = mem::take(&mut current_group);
-                        groups.push(finished);
-
-                        current_group.name = data;
-                        current_group.start = faces.len();
-                        current_group.finish = faces.len();
-
+                    if current_group.start != current_group.finish {
+                        groups.push(current_group.restart(faces.len()));
                         current_object.finish += 1;
                     }
+                    current_group.name = data;
                 }
                 Line::Object(data) => {
-                    if current_object.start == current_object.finish && faces.is_empty() {
-                        current_object.name = data;
-                    } else {
+                    if current_object.start != current_object.finish || !faces.is_empty() {
                         if current_group.start != current_group.finish {
                             current_object.finish += 1;
-
-                            let finished = mem::take(&mut current_group);
-                            groups.push(finished);
-
-                            current_group.start = faces.len();
-                            current_group.finish = faces.len();
+                            groups.push(current_group.restart(faces.len()));
                         }
 
-                        let finished = mem::take(&mut current_object);
-                        objects.push(finished);
-
-                        current_object.name = data;
-                        current_object.start = groups.len();
-                        current_object.finish = groups.len();
+                        objects.push(current_object.restart(groups.len()));
                     }
+                    current_object.name = data;
                 }
 
                 Line::MaterialLib(data) => {
@@ -114,14 +100,12 @@ impl ObjObject {
         // store current group
         if current_group.start != current_group.finish {
             current_object.finish += 1;
-            let finished = std::mem::take(&mut current_group);
-            groups.push(finished);
+            groups.push(current_group);
         }
 
         // store current object
         if current_object.start != current_object.finish {
-            let finished = std::mem::take(&mut current_object);
-            objects.push(finished);
+            objects.push(current_object);
         }
 
         Ok(Self {
@@ -165,10 +149,10 @@ impl ObjObject {
                 Line::Empty
             }
             [b'm', b't', b'l', b'l', b'i', b'b', b' ', ..] => {
-                Line::MaterialLib(Self::parse_mtl(line[7..].trim())?)
+                Line::MaterialLib(Self::parse_mtl(line[7..].trim()))
             }
             [b'u', b's', b'e', b'm', b't', b'l', b' ', ..] => {
-                Line::MaterialUse(Self::parse_mtl(line[7..].trim())?)
+                Line::MaterialUse(Self::parse_mtl(line[7..].trim()))
             }
             _ => return Err(Error::UnkownLine(String::from(line))),
         };
@@ -189,17 +173,17 @@ impl ObjObject {
         let z = str.parse::<f32>()?;
 
         if let Some(str) = split.next() {
-            let a = str.parse::<f32>()?;
+            let red = str.parse::<f32>()?;
 
             let str = split.next().ok_or(Error::NonUniformColors)?;
-            let b = str.parse::<f32>()?;
+            let green = str.parse::<f32>()?;
 
             let str = split.next().ok_or(Error::NonUniformColors)?;
-            let c = str.parse::<f32>()?;
+            let blue = str.parse::<f32>()?;
 
             return Ok(VertexData {
                 position: (x, y, z),
-                color: Some((a, b, c)),
+                color: Some((red, green, blue)),
             });
         }
 
@@ -242,6 +226,17 @@ impl ObjObject {
         t_count: u32,
         n_count: u32,
     ) -> Result<(FaceData, Option<FaceData>), Error> {
+        // An index counts from 1. A negative one counts back from the last of the `count` read so
+        // far: -1 = count, -2 = count - 1. One that reaches back past the first wraps around to an
+        // index past the end.
+        const fn resolve(index: i32, count: u32) -> u32 {
+            if index < 0 {
+                count.wrapping_sub(index.unsigned_abs() - 1)
+            } else {
+                index.unsigned_abs()
+            }
+        }
+
         // i t n
         fn parse_single(
             data: &str,
@@ -253,15 +248,7 @@ impl ObjObject {
 
             // vertex index
             let str = split.next().ok_or(Error::UnexpectedEoL)?;
-            let i = str.parse::<i32>()?;
-            let i = if i < 0 {
-                // negativ index, meaning
-                // => -1 = v_count
-                // => -2 = v_count - 1
-                (v_count as i32 + (i + 1)) as u32
-            } else {
-                i as u32
-            };
+            let i = resolve(str.parse::<i32>()?, v_count);
 
             // texture index
             let t = match split.next() {
@@ -271,17 +258,7 @@ impl ObjObject {
                 Some("") => None,
 
                 // 986/0980...
-                Some(str) => {
-                    let t = str.parse::<i32>()?;
-                    let t = if t < 0 {
-                        // negativ index
-                        (t_count as i32 + (t + 1)) as u32
-                    } else {
-                        t as u32
-                    };
-
-                    Some(t)
-                }
+                Some(str) => Some(resolve(str.parse::<i32>()?, t_count)),
             };
 
             // normal index
@@ -289,17 +266,7 @@ impl ObjObject {
                 None => return Ok((i, t, None)),
 
                 // .../.../1231
-                Some(str) => {
-                    let n = str.parse::<i32>()?;
-                    let n = if n < 0 {
-                        // negativ index
-                        (n_count as i32 + (n + 1)) as u32
-                    } else {
-                        n as u32
-                    };
-
-                    Some(n)
-                }
+                Some(str) => Some(resolve(str.parse::<i32>()?, n_count)),
             };
 
             Ok((i, t, n))
@@ -354,9 +321,9 @@ impl ObjObject {
         trimmed.to_string()
     }
 
-    fn parse_mtl(data: &str) -> Result<String, Error> {
+    fn parse_mtl(data: &str) -> String {
         let str = data.trim();
-        Ok(str.to_owned())
+        str.to_owned()
     }
 
     const fn triangulate(
@@ -437,6 +404,21 @@ pub struct GroupingData {
     pub(crate) mtl: Option<String>,
     pub(crate) start: usize,
     pub(crate) finish: usize,
+}
+
+impl GroupingData {
+    /// Returns what was gathered so far, and starts again (unnamed, with no material) at `at`: a
+    /// face for a group, a group for an object.
+    fn restart(&mut self, at: usize) -> Self {
+        mem::replace(
+            self,
+            Self {
+                start: at,
+                finish: at,
+                ..Self::default()
+            },
+        )
+    }
 }
 
 #[cfg(test)]

@@ -44,10 +44,10 @@ fn write_indexed_to_file(verts: Vec<VertexTextureData>, indices: Vec<usize>) {
         }
     }
 
-    file.write(str.as_bytes()).unwrap();
+    file.write_all(str.as_bytes()).unwrap();
     str.clear();
 
-    for chunk in indices.chunks_exact(3) {
+    for chunk in indices.as_chunks::<3>().0 {
         let pos1 = chunk[0] + 1;
         let pos2 = chunk[1] + 1;
         let pos3 = chunk[2] + 1;
@@ -59,7 +59,7 @@ fn write_indexed_to_file(verts: Vec<VertexTextureData>, indices: Vec<usize>) {
         }
     }
 
-    file.write(str.as_bytes()).unwrap();
+    file.write_all(str.as_bytes()).unwrap();
 
     str.clear();
 }
@@ -77,7 +77,7 @@ fn _vertex_to_file(verts: Vec<VertexTextureData>) {
 
     let mut normals = false;
 
-    for vert in verts.chunks_exact(3) {
+    for vert in verts.as_chunks::<3>().0 {
         let p1 = vert[0].vertex.position;
         let p2 = vert[1].vertex.position;
         let p3 = vert[2].vertex.position;
@@ -109,7 +109,7 @@ fn _vertex_to_file(verts: Vec<VertexTextureData>) {
 
         i += 3;
 
-        file.write(str.as_bytes()).unwrap();
+        file.write_all(str.as_bytes()).unwrap();
 
         str.clear();
     }
@@ -155,7 +155,7 @@ fn _object_to_file(obj: &ObjObject) {
 
                 i += 3;
 
-                file.write(str.as_bytes()).unwrap();
+                file.write_all(str.as_bytes()).unwrap();
                 str.clear();
             }
         }
