@@ -1,8 +1,9 @@
 //! A loader for glTF 2.0 files.
 //!
 //! It reads `.gltf` (with its `.bin` files and pictures next to it) and the single file `.glb`, and
-//! gives plain data: the triangles of every mesh, the materials, where the pictures are, and where
-//! each node puts each mesh in the world.
+//! gives plain data: the triangles of every mesh, the materials, where the pictures are, where each
+//! node puts each mesh in the world, and the scene's lights (`KHR_lights_punctual`), cameras and the
+//! nodes that carry properties of their own (glTF's `extras`: Blender's custom properties).
 //!
 //! The file is read with the `gltf` crate; this module only turns what it finds into data that
 //! does not depend on it, in the conventions of this crate and of the engine that uses it:
@@ -17,7 +18,7 @@
 //!   decodes it with whatever it has. Colours are linear, as glTF says; the picture's own
 //!   colour space is by use: base colour and emissive are sRGB, the others are not.
 //!
-//! Not read (yet): cameras, skins, animations, morph targets, sparse accessors beyond what the
+//! Not read (yet): skins, animations, morph targets, sparse accessors beyond what the
 //! `gltf` crate resolves itself, texture samplers and `KHR_texture_transform`. Meshes that are
 //! points or lines are left out (and counted in [`GltfScene::skipped_primitives`]).
 
@@ -37,6 +38,13 @@ pub struct GltfScene {
     /// Every use of a mesh in the default scene (the first one if none is the default), with its
     /// transform in the world.
     pub instances: Vec<GltfInstance>,
+    /// The lights of the default scene, where their nodes put them.
+    pub lights: Vec<GltfLight>,
+    /// The cameras of the default scene, where their nodes put them.
+    pub cameras: Vec<GltfCamera>,
+    /// The nodes of the default scene that have properties of their own and are not a light or a
+    /// camera: the places the scene marks for the program.
+    pub markers: Vec<GltfMarker>,
     /// How many primitives were left out because they are not made of triangles.
     pub skipped_primitives: usize,
 }
@@ -72,6 +80,141 @@ pub struct GltfInstance {
     /// Takes the points of the mesh to the world (row-vector convention).
     pub transform: [[f32; 4]; 4],
     pub name: Option<String>,
+}
+
+/// A light of the scene (glTF's `KHR_lights_punctual`), where its node puts it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GltfLight {
+    /// The node's name (or the light's, if the node has none).
+    pub name: Option<String>,
+    pub kind: GltfLightKind,
+    /// Linear red, green and blue.
+    pub color: [f32; 3],
+    /// How bright it is, in glTF's units: candela (lumen per steradian) for a point or a spot light,
+    /// lux (lumen per square metre) for a directional one.
+    pub intensity: f32,
+    /// How far it reaches, if the file says (it gives no light from there on); `None`: as far as its
+    /// intensity lights anything.
+    pub range: Option<f32>,
+    /// Where it is in the world (nothing for a directional light).
+    pub position: [f32; 3],
+    /// The way it shines in the world (its node's -z), of length 1 (nothing for a point light).
+    pub direction: [f32; 3],
+    /// The properties of its node (see [`GltfMarker`]).
+    pub properties: Vec<(String, ExtraValue)>,
+}
+
+/// What kind of light a [`GltfLight`] is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GltfLightKind {
+    /// Infinitely far away: only its direction counts.
+    Directional,
+    /// From a point, the same every way.
+    Point,
+    /// From a point, in a cone: full inside `inner_cone_angle`, nothing outside `outer_cone_angle`
+    /// (both from the middle of the cone, in radians).
+    Spot {
+        inner_cone_angle: f32,
+        outer_cone_angle: f32,
+    },
+}
+
+/// A camera of the scene, where its node puts it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GltfCamera {
+    /// The node's name (or the camera's, if the node has none).
+    pub name: Option<String>,
+    /// Where it is in the world.
+    pub position: [f32; 3],
+    /// The way it looks (its node's -z), of length 1.
+    pub forward: [f32; 3],
+    /// Its up (its node's +y), of length 1.
+    pub up: [f32; 3],
+    /// The vertical field of view in radians, for a perspective camera (`None`: orthographic).
+    pub yfov: Option<f32>,
+    pub znear: f32,
+    /// The far plane, if it has one (a perspective camera may have none).
+    pub zfar: Option<f32>,
+}
+
+/// A node with properties of its own that is not a light or a camera: a place the scene marks.
+///
+/// The properties are glTF's `extras`, which Blender writes from an object's custom properties: what
+/// the scene says to the program about the place (an effect that goes there, something that starts
+/// there). A node that has a mesh is in [`GltfScene::instances`] too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GltfMarker {
+    pub name: Option<String>,
+    /// The node's matrix in the world (row vectors).
+    pub transform: [[f32; 4]; 4],
+    /// The properties, in the order of the file.
+    pub properties: Vec<(String, ExtraValue)>,
+}
+
+impl GltfMarker {
+    /// Where the node is in the world.
+    #[must_use]
+    pub const fn position(&self) -> [f32; 3] {
+        [
+            self.transform[3][0],
+            self.transform[3][1],
+            self.transform[3][2],
+        ]
+    }
+
+    /// The value of the property `key`, if the node has it.
+    #[must_use]
+    pub fn property(&self, key: &str) -> Option<&ExtraValue> {
+        property(&self.properties, key)
+    }
+}
+
+/// The value of a property of a node: what JSON has.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtraValue {
+    Number(f64),
+    Text(String),
+    Bool(bool),
+    /// Anything else (a list, an object, null), as its JSON.
+    Other(String),
+}
+
+impl ExtraValue {
+    /// The number, if it is one.
+    #[must_use]
+    pub const fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The text, if it is one.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The truth value, if it is one.
+    #[must_use]
+    pub const fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+/// The value of the property `key` among `properties`, if it is there.
+#[must_use]
+pub fn property<'a>(properties: &'a [(String, ExtraValue)], key: &str) -> Option<&'a ExtraValue> {
+    properties
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value)
 }
 
 /// A picture a material uses, and which texture coordinates it is read with.
@@ -306,7 +449,7 @@ fn build(
         .or_else(|| document.scenes().next());
     if let Some(root_scene) = root_scene {
         for node in root_scene.nodes() {
-            walk(&node, IDENTITY, &mut scene.instances);
+            walk(&node, IDENTITY, &mut scene);
         }
     }
     Ok(scene)
@@ -330,20 +473,108 @@ fn multiply(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     out
 }
 
-fn walk(node: &gltf::Node, parent: [[f32; 4]; 4], out: &mut Vec<GltfInstance>) {
+fn walk(node: &gltf::Node, parent: [[f32; 4]; 4], out: &mut GltfScene) {
     // glTF's `matrix()` is `m[column][row]`, for column vectors: read as rows it is the matrix for
     // row vectors. The node's own matrix comes first, then its parent's.
     let local = node.transform().matrix();
     let world = multiply(&local, &parent);
     if let Some(mesh) = node.mesh() {
-        out.push(GltfInstance {
+        out.instances.push(GltfInstance {
             mesh: mesh.index(),
             transform: world,
             name: node.name().map(str::to_owned),
         });
     }
+    // The rows of the matrix are where the node's axes go in the world, and the last is where it is.
+    let position = [world[3][0], world[3][1], world[3][2]];
+    let axis = |row: usize, sign: f32| {
+        normalized([
+            sign * world[row][0],
+            sign * world[row][1],
+            sign * world[row][2],
+        ])
+    };
+    let properties = properties(node.extras());
+    if let Some(light) = node.light() {
+        out.lights.push(GltfLight {
+            name: node.name().or_else(|| light.name()).map(str::to_owned),
+            kind: match light.kind() {
+                gltf::khr_lights_punctual::Kind::Directional => GltfLightKind::Directional,
+                gltf::khr_lights_punctual::Kind::Point => GltfLightKind::Point,
+                gltf::khr_lights_punctual::Kind::Spot {
+                    inner_cone_angle,
+                    outer_cone_angle,
+                } => GltfLightKind::Spot {
+                    inner_cone_angle,
+                    outer_cone_angle,
+                },
+            },
+            color: light.color(),
+            intensity: light.intensity(),
+            range: light.range(),
+            position,
+            direction: axis(2, -1.0),
+            properties,
+        });
+    } else if let Some(camera) = node.camera() {
+        let (yfov, znear, zfar) = match camera.projection() {
+            gltf::camera::Projection::Perspective(p) => (Some(p.yfov()), p.znear(), p.zfar()),
+            gltf::camera::Projection::Orthographic(o) => (None, o.znear(), Some(o.zfar())),
+        };
+        out.cameras.push(GltfCamera {
+            name: node.name().or_else(|| camera.name()).map(str::to_owned),
+            position,
+            forward: axis(2, -1.0),
+            up: axis(1, 1.0),
+            yfov,
+            znear,
+            zfar,
+        });
+    } else if !properties.is_empty() {
+        out.markers.push(GltfMarker {
+            name: node.name().map(str::to_owned),
+            transform: world,
+            properties,
+        });
+    }
     for child in node.children() {
         walk(&child, world, out);
+    }
+}
+
+/// `v` made of length 1 (as it is if it has no length).
+fn normalized(v: [f32; 3]) -> [f32; 3] {
+    let length = v[2].mul_add(v[2], v[0].mul_add(v[0], v[1] * v[1])).sqrt();
+    if length > 0.0 {
+        [v[0] / length, v[1] / length, v[2] / length]
+    } else {
+        v
+    }
+}
+
+/// The properties of a node (its `extras`, a JSON object), in the order of the file; none if it has
+/// none or they are not an object.
+fn properties(extras: &gltf::json::Extras) -> Vec<(String, ExtraValue)> {
+    use gltf::json::Value;
+    let Some(raw) = extras else {
+        return Vec::new();
+    };
+    match gltf::json::deserialize::from_str::<Value>(raw.get()) {
+        Ok(Value::Object(map)) => map
+            .into_iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    Value::Number(number) => {
+                        ExtraValue::Number(number.as_f64().unwrap_or(f64::NAN))
+                    }
+                    Value::String(text) => ExtraValue::Text(text),
+                    Value::Bool(truth) => ExtraValue::Bool(truth),
+                    other => ExtraValue::Other(other.to_string()),
+                };
+                (key, value)
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -545,6 +776,115 @@ mod tests {
 }}"#,
             length = data.len()
         )
+    }
+
+    /// A spot light pointing down, a camera, and a node that marks a place with its properties.
+    const LIGHT_CAMERA_MARKER: &str = r#"{
+  "asset": {"version": "2.0"},
+  "scene": 0,
+  "scenes": [{"nodes": [0, 1, 2]}],
+  "extensionsUsed": ["KHR_lights_punctual"],
+  "extensions": {"KHR_lights_punctual": {"lights": [
+    {"type": "spot", "color": [1, 0.5, 0.25], "intensity": 100, "range": 20,
+     "spot": {"innerConeAngle": 0.2, "outerConeAngle": 0.5}}
+  ]}},
+  "cameras": [{"type": "perspective", "perspective": {"yfov": 0.8, "znear": 0.1, "zfar": 500}}],
+  "nodes": [
+    {"name": "lamp", "translation": [1, 2, 3], "rotation": [-0.70710678, 0, 0, 0.70710678],
+     "extensions": {"KHR_lights_punctual": {"light": 0}}, "extras": {"shadows": "auto"}},
+    {"name": "eye", "translation": [0, 1, 5], "camera": 0},
+    {"name": "FX", "translation": [4, 0, -2], "extras": {"effect": "sparks", "rate": 0.5, "heat": true, "list": [1]}}
+  ]
+}"#;
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
+    }
+
+    #[test]
+    fn the_lights_are_read_where_their_nodes_put_them() {
+        let scene =
+            GltfScene::read_from_slice(LIGHT_CAMERA_MARKER.as_bytes(), Path::new(".")).unwrap();
+
+        assert_eq!(scene.lights.len(), 1);
+        let light = &scene.lights[0];
+        assert_eq!(light.name.as_deref(), Some("lamp"));
+        assert_eq!(
+            light.kind,
+            GltfLightKind::Spot {
+                inner_cone_angle: 0.2,
+                outer_cone_angle: 0.5
+            }
+        );
+        assert_eq!(light.color, [1.0, 0.5, 0.25]);
+        assert!((light.intensity - 100.0).abs() < 1e-6);
+        assert_eq!(light.range, Some(20.0));
+        assert!(close(light.position, [1.0, 2.0, 3.0]));
+        // Turned a quarter about x: its -z points down.
+        assert!(
+            close(light.direction, [0.0, -1.0, 0.0]),
+            "{:?}",
+            light.direction
+        );
+        assert_eq!(
+            property(&light.properties, "shadows").and_then(ExtraValue::as_str),
+            Some("auto")
+        );
+    }
+
+    #[test]
+    fn the_cameras_are_read_where_their_nodes_put_them() {
+        let scene =
+            GltfScene::read_from_slice(LIGHT_CAMERA_MARKER.as_bytes(), Path::new(".")).unwrap();
+
+        assert_eq!(scene.cameras.len(), 1);
+        let camera = &scene.cameras[0];
+        assert_eq!(camera.name.as_deref(), Some("eye"));
+        assert!(close(camera.position, [0.0, 1.0, 5.0]));
+        assert!(close(camera.forward, [0.0, 0.0, -1.0]));
+        assert!(close(camera.up, [0.0, 1.0, 0.0]));
+        assert_eq!(camera.yfov, Some(0.8));
+        assert_eq!(camera.zfar, Some(500.0));
+        assert!((camera.znear - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_node_with_properties_is_a_marker_and_its_values_keep_their_kind() {
+        let scene =
+            GltfScene::read_from_slice(LIGHT_CAMERA_MARKER.as_bytes(), Path::new(".")).unwrap();
+
+        // The light's node has properties too, but it is a light: the marker is the one node that is
+        // neither.
+        assert_eq!(scene.markers.len(), 1);
+        let marker = &scene.markers[0];
+        assert_eq!(marker.name.as_deref(), Some("FX"));
+        assert!(close(marker.position(), [4.0, 0.0, -2.0]));
+        assert_eq!(
+            marker.property("effect").and_then(ExtraValue::as_str),
+            Some("sparks")
+        );
+        assert_eq!(
+            marker.property("rate").and_then(ExtraValue::as_f64),
+            Some(0.5)
+        );
+        assert_eq!(
+            marker.property("heat").and_then(ExtraValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            marker.property("list"),
+            Some(&ExtraValue::Other("[1]".to_owned()))
+        );
+        assert_eq!(marker.property("missing"), None);
+        // No mesh anywhere.
+        assert_eq!(scene.instances.len(), 0);
+    }
+
+    #[test]
+    fn a_scene_without_lights_cameras_or_properties_has_none() {
+        let scene = GltfScene::read_from_slice(triangle_file().as_bytes(), Path::new(".")).unwrap();
+
+        assert!(scene.lights.is_empty() && scene.cameras.is_empty() && scene.markers.is_empty());
     }
 
     #[test]

@@ -10,7 +10,7 @@ description = "A very basic file parser for .obj and .mtl files, and a loader fo
 exclude = ["examples/*", "tests/*", "benches/*", "meshes/*"]
 
 [dependencies]
-gltf = { version = "1.4.1", default-features = false, features = ["utils", "names"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "names", "extras", "KHR_lights_punctual"] }
 rustc-hash = "2.1.1"
 
 [dev-dependencies]
