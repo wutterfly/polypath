@@ -100,7 +100,10 @@ fn put_f32(bytes: &mut Vec<u8>, value: f32) {
 }
 
 fn put_len(bytes: &mut Vec<u8>, length: usize) {
-    put_u32(bytes, u32::try_from(length).expect("a list of a mesh fits 32 bits"));
+    put_u32(
+        bytes,
+        u32::try_from(length).expect("a list of a mesh fits 32 bits"),
+    );
 }
 
 /// The levels after the first (the mesh itself is not kept) as a file, for [`content_key`] `key`.
@@ -369,7 +372,10 @@ mod tests {
         let (positions, indices) = sphere();
         let key = content_key(&indices, &positions, &recipe());
         let bytes = levels_to_bytes(key, &[]);
-        assert_eq!(levels_from_bytes(&bytes, key).map(|levels| levels.len()), Some(0));
+        assert_eq!(
+            levels_from_bytes(&bytes, key).map(|levels| levels.len()),
+            Some(0)
+        );
 
         // Another mesh: a vertex moved, an index changed.
         let mut moved = positions.clone();
@@ -403,7 +409,10 @@ mod tests {
         .collect();
         let bytes = levels_to_bytes(key, &made);
         for cut in (0..bytes.len()).step_by(97) {
-            assert!(levels_from_bytes(&bytes[..cut], key).is_none(), "cut at {cut}");
+            assert!(
+                levels_from_bytes(&bytes[..cut], key).is_none(),
+                "cut at {cut}"
+            );
         }
         let mut wrong = bytes.clone();
         wrong[0] = b'X';

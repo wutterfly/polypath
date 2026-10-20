@@ -885,7 +885,8 @@ mod flat_tests {
                 triangles: MAX_TRIANGLES + 1,
             },
         ] {
-            let result = std::panic::catch_unwind(|| build(&indices, &positions, limits, 0.5, false));
+            let result =
+                std::panic::catch_unwind(|| build(&indices, &positions, limits, 0.5, false));
             assert!(result.is_err(), "{limits:?}");
         }
     }

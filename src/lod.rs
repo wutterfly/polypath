@@ -238,7 +238,9 @@ pub fn simplify_with_errors<V: Vertex>(
         "the indices are triangles: 3 numbers each"
     );
     assert!(
-        indices.iter().all(|&index| (index as usize) < vertices.len()),
+        indices
+            .iter()
+            .all(|&index| (index as usize) < vertices.len()),
         "every index is a vertex"
     );
     let mut levels = vec![(indices.to_vec(), 0.0, 0.0)];
@@ -473,7 +475,9 @@ impl Attributes {
         let mut varies = [false; CHANNELS];
         for (vertex, value) in vertices.iter().zip(&mut values) {
             let normal = vertex.normal().map(|n| <[f32; 3]>::from(n).map(f64::from));
-            let uv = vertex.texture_coord().map(|t| <[f32; 2]>::from(t).map(f64::from));
+            let uv = vertex
+                .texture_coord()
+                .map(|t| <[f32; 2]>::from(t).map(f64::from));
             if let Some(normal) = normal {
                 value[..3].copy_from_slice(&normal);
             }
@@ -482,7 +486,11 @@ impl Attributes {
                 value[4] = uv[1];
             }
             for channel in 0..CHANNELS {
-                let has = if channel < 3 { normal.is_some() } else { uv.is_some() };
+                let has = if channel < 3 {
+                    normal.is_some()
+                } else {
+                    uv.is_some()
+                };
                 if !has || !value[channel].is_finite() {
                     continue;
                 }
@@ -494,16 +502,24 @@ impl Attributes {
                 }
             }
         }
-        let weights = [normal_weight, normal_weight, normal_weight, uv_weight, uv_weight];
-        let active: [bool; CHANNELS] = std::array::from_fn(|channel| {
-            varies[channel] && weights[channel] > 0.0
-        });
+        let weights = [
+            normal_weight,
+            normal_weight,
+            normal_weight,
+            uv_weight,
+            uv_weight,
+        ];
+        let active: [bool; CHANNELS] =
+            std::array::from_fn(|channel| varies[channel] && weights[channel] > 0.0);
         if !active.iter().any(|&on| on) {
             return None;
         }
         // The size of the mesh: the diagonal of the box around its places.
         let (mut low, mut high) = ([f64::MAX; 3], [f64::MIN; 3]);
-        for place in places.iter().filter(|place| place.iter().all(|v| v.is_finite())) {
+        for place in places
+            .iter()
+            .filter(|place| place.iter().all(|v| v.is_finite()))
+        {
             for axis in 0..3 {
                 low[axis] = low[axis].min(place[axis]);
                 high[axis] = high[axis].max(place[axis]);
@@ -514,8 +530,7 @@ impl Attributes {
         }
         let extent = length(sub(high, low));
         let origin = std::array::from_fn(|axis| f64::midpoint(low[axis], high[axis]));
-        let scale_squared =
-            std::array::from_fn(|channel| (weights[channel] * extent).powi(2));
+        let scale_squared = std::array::from_fn(|channel| (weights[channel] * extent).powi(2));
         Some(Self {
             values,
             terms: vec![VertexTerms::default(); vertices.len()],
@@ -655,7 +670,11 @@ impl State {
             .iter()
             .map(|vertex| {
                 let (x, y, z) = vertex.position();
-                let key = [(x + 0.0).to_bits(), (y + 0.0).to_bits(), (z + 0.0).to_bits()];
+                let key = [
+                    (x + 0.0).to_bits(),
+                    (y + 0.0).to_bits(),
+                    (z + 0.0).to_bits(),
+                ];
                 *ids.entry(key).or_insert_with(|| {
                     positions.push([f64::from(x), f64::from(y), f64::from(z)]);
                     u32::try_from(positions.len() - 1).expect("the places fit 32 bits")
@@ -671,10 +690,7 @@ impl State {
                 let finite = places
                     .iter()
                     .all(|&place| positions[place].iter().all(|value| value.is_finite()));
-                finite
-                    && places[0] != places[1]
-                    && places[1] != places[2]
-                    && places[0] != places[2]
+                finite && places[0] != places[1] && places[1] != places[2] && places[0] != places[2]
             })
             .collect();
         // A triangle with no area at all (three places on a line) is as good as none.
@@ -715,7 +731,10 @@ impl State {
         };
         state.attributes = Attributes::new(vertices, &state.positions, settings);
         state.seam_weight = f64::from(settings.seam_weight.max(0.0));
-        state.make_quadrics(f64::from(settings.border_weight.max(0.0)), settings.lock_borders);
+        state.make_quadrics(
+            f64::from(settings.border_weight.max(0.0)),
+            settings.lock_borders,
+        );
         state.push_all();
         state
     }
@@ -830,9 +849,7 @@ impl State {
         self.faces[a as usize]
             .iter()
             .copied()
-            .filter(|&triangle| {
-                self.alive[triangle as usize] && self.places(triangle).contains(&b)
-            })
+            .filter(|&triangle| self.alive[triangle as usize] && self.places(triangle).contains(&b))
             .collect()
     }
 
@@ -869,7 +886,8 @@ impl State {
     fn nearest_side(&self, vertex: u32, from: u32, to: u32) -> Option<u32> {
         let mut around: Vec<u32> = Vec::new();
         for &triangle in &self.faces[from as usize] {
-            if self.alive[triangle as usize] && self.triangles[triangle as usize].contains(&vertex) {
+            if self.alive[triangle as usize] && self.triangles[triangle as usize].contains(&vertex)
+            {
                 for place in self.places(triangle) {
                     if place != from && place != to && !around.contains(&place) {
                         around.push(place);
@@ -958,7 +976,10 @@ impl State {
                     .iter()
                     .position(|&place| place == to)
                     .map(|at| corners[at])?;
-                match vertex_map.iter().find(|(from_vertex, _)| *from_vertex == vertex) {
+                match vertex_map
+                    .iter()
+                    .find(|(from_vertex, _)| *from_vertex == vertex)
+                {
                     Some(&(_, mapped)) if mapped != target => return None,
                     Some(_) => {}
                     None => vertex_map.push((vertex, target)),
@@ -1024,9 +1045,10 @@ impl State {
                 merged.push((vertex, target));
             }
         }
-        let shading = self.attributes.as_ref().map_or(0.0, |attributes| {
-            attributes.error(&merged, target_position)
-        });
+        let shading = self
+            .attributes
+            .as_ref()
+            .map_or(0.0, |attributes| attributes.error(&merged, target_position));
 
         let mut quadric = self.quadrics[from as usize];
         quadric.add(&self.quadrics[to as usize]);
@@ -1334,9 +1356,17 @@ mod tests {
             assert_eq!(indices.len() % 3, 0);
             let mut seen = std::collections::HashSet::new();
             for triangle in indices.as_chunks::<3>().0 {
-                assert!(triangle.iter().all(|&index| (index as usize) < mesh.positions.len()));
+                assert!(
+                    triangle
+                        .iter()
+                        .all(|&index| (index as usize) < mesh.positions.len())
+                );
                 // Three different vertices, and no triangle twice.
-                assert!(triangle[0] != triangle[1] && triangle[1] != triangle[2] && triangle[0] != triangle[2]);
+                assert!(
+                    triangle[0] != triangle[1]
+                        && triangle[1] != triangle[2]
+                        && triangle[0] != triangle[2]
+                );
                 let mut sorted = *triangle;
                 sorted.sort_unstable();
                 assert!(seen.insert(sorted), "a triangle is there twice");
@@ -1349,11 +1379,12 @@ mod tests {
         let mesh = sphere(24, 32);
         for (indices, _) in simplify(&mesh.indices, &mesh.positions, &settings(5, 16)) {
             let counts = edge_counts(&mesh, &indices);
-            assert!(counts.values().all(|&count| count == 2), "an open or a pinched edge");
-            let places: std::collections::HashSet<u32> = counts
-                .keys()
-                .flat_map(|&(a, b)| [a, b])
-                .collect();
+            assert!(
+                counts.values().all(|&count| count == 2),
+                "an open or a pinched edge"
+            );
+            let places: std::collections::HashSet<u32> =
+                counts.keys().flat_map(|&(a, b)| [a, b]).collect();
             // V - E + F = 2 for a sphere.
             let euler = places.len() as i64 - counts.len() as i64 + (indices.len() / 3) as i64;
             assert_eq!(euler, 2);
@@ -1377,8 +1408,16 @@ mod tests {
         let last = levels.last().unwrap();
 
         // The four corners are still used, and no vertex is outside of the square.
-        for corner in [[0.0, 0.0, 0.0], [12.0, 0.0, 0.0], [0.0, 0.0, 12.0], [12.0, 0.0, 12.0]] {
-            let used = last.0.iter().any(|&index| mesh.positions[index as usize] == corner);
+        for corner in [
+            [0.0, 0.0, 0.0],
+            [12.0, 0.0, 0.0],
+            [0.0, 0.0, 12.0],
+            [12.0, 0.0, 12.0],
+        ] {
+            let used = last
+                .0
+                .iter()
+                .any(|&index| mesh.positions[index as usize] == corner);
             assert!(used, "the corner {corner:?} is gone");
         }
         // The area of what is left is the area of the square (the border did not move in).
@@ -1409,14 +1448,20 @@ mod tests {
             ..settings(6, 2)
         };
         let levels = simplify(&mesh.indices, &mesh.positions, &settings);
-        assert!(levels.len() >= 2, "interior simplification must remain possible");
+        assert!(
+            levels.len() >= 2,
+            "interior simplification must remain possible"
+        );
         assert!(levels.last().unwrap().0.len() < mesh.indices.len() / 2);
         for (indices, _) in levels {
             let current = edge_counts(&mesh, &indices);
             for edge in &boundary {
                 assert_eq!(current.get(edge), Some(&1), "a shared border changed");
             }
-            assert_eq!(current.values().filter(|&&count| count == 1).count(), boundary.len());
+            assert_eq!(
+                current.values().filter(|&&count| count == 1).count(),
+                boundary.len()
+            );
         }
     }
 
@@ -1427,7 +1472,12 @@ mod tests {
 
         // Collapsing a corner (three sides meet) onto a place with two is not possible, and that
         // is every edge: no level below the cube.
-        assert_eq!(levels.len(), 1, "{:?}", levels.iter().map(|l| l.0.len() / 3).collect::<Vec<_>>());
+        assert_eq!(
+            levels.len(),
+            1,
+            "{:?}",
+            levels.iter().map(|l| l.0.len() / 3).collect::<Vec<_>>()
+        );
     }
 
     /// A tube of `rings` rings, `segments` around, with the seam of its texture at segment 0: the
@@ -1483,7 +1533,8 @@ mod tests {
     }
 
     #[test]
-    fn a_mesh_of_separate_triangles_does_not_go_down_by_the_strict_rule_and_does_with_a_seam_weight() {
+    fn a_mesh_of_separate_triangles_does_not_go_down_by_the_strict_rule_and_does_with_a_seam_weight()
+     {
         let mesh = soup(&sphere(16, 24));
 
         let strict = simplify(&mesh.indices, &mesh.positions, &settings(4, 16));
@@ -1525,7 +1576,11 @@ mod tests {
         let levels = simplify(&mesh.indices, &vertices, &settings(6, 2));
 
         let last = levels.last().unwrap();
-        assert!(last.0.len() < mesh.indices.len() / 4, "{} triangles", last.0.len() / 3);
+        assert!(
+            last.0.len() < mesh.indices.len() / 4,
+            "{} triangles",
+            last.0.len() / 3
+        );
         assert!(last.1 < 1.0e-3, "error {}", last.1);
     }
 
@@ -1535,18 +1590,29 @@ mod tests {
         // Flat, with the normal of every other vertex turned aside: the positions say any
         // triangle will do, the shading does not.
         let vertices = corners(&mesh, |index| {
-            if index % 2 == 0 { [0.0, 1.0, 0.0] } else { [0.8, 0.6, 0.0] }
+            if index % 2 == 0 {
+                [0.0, 1.0, 0.0]
+            } else {
+                [0.8, 0.6, 0.0]
+            }
         });
         let positions_only = simplify(&mesh.indices, &mesh.positions, &settings(6, 2));
         let shaded = simplify(&mesh.indices, &vertices, &settings(6, 2));
 
         assert!(positions_only.last().unwrap().1 < 1.0e-3);
         assert!(shaded.len() >= 2);
-        assert!(shaded.last().unwrap().1 > 0.1, "error {}", shaded.last().unwrap().1);
+        assert!(
+            shaded.last().unwrap().1 > 0.1,
+            "error {}",
+            shaded.last().unwrap().1
+        );
         // The surface itself is flat: the geometric error, which a shadow uses, has no shading.
         let errors = simplify_with_errors(&mesh.indices, &vertices, &settings(6, 2));
         let (_, error, geometric) = errors.last().unwrap();
-        assert!(*geometric < 1.0e-3 && geometric <= error, "{geometric} of {error}");
+        assert!(
+            *geometric < 1.0e-3 && geometric <= error,
+            "{geometric} of {error}"
+        );
         // And what is left out is left out: with the weights at 0 it is the positions again.
         let off = Settings {
             normal_weight: 0.0,
@@ -1564,7 +1630,11 @@ mod tests {
         // spans the change.
         let mesh = grid(12);
         let vertices = corners(&mesh, |index| {
-            if mesh.positions[index][0] < 6.0 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] }
+            if mesh.positions[index][0] < 6.0 {
+                [0.0, 1.0, 0.0]
+            } else {
+                [1.0, 0.0, 0.0]
+            }
         });
         let levels = simplify(&mesh.indices, &vertices, &settings(1, 2));
 

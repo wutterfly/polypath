@@ -35,12 +35,7 @@ fn report<V: Vertex>(name: &str, indices: &[u32], vertices: &[V], settings: &Set
         .sqrt();
 
     let started = Instant::now();
-    let levels = lod::build(
-        indices,
-        vertices,
-        settings,
-        (Limits::MAX, 0.5, false),
-    );
+    let levels = lod::build(indices, vertices, settings, (Limits::MAX, 0.5, false));
     let took = started.elapsed();
     println!(
         "{name}: {} triangles, {} vertices, size {size:.2}, {} levels in {:.0} ms",

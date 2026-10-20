@@ -16,17 +16,23 @@
 //! behind when the viewer is within 30 degrees of the way they face).
 
 use polypath::{
-    ObjObject, opt,
+    ObjObject,
     gltf::GltfScene,
     meshlet::{self, Limits},
+    opt,
 };
 
 fn main() {
     let merge = std::env::args().any(|arg| arg == "--merge");
     let mut args = std::env::args().skip(1).filter(|arg| arg != "--merge");
     let path = args.next().expect("a file to read");
-    let threshold: f32 = args.next().map_or(0.9, |arg| arg.parse().expect("a number"));
-    let mut limit = |most: usize| args.next().map_or(most, |arg| arg.parse().expect("a number"));
+    let threshold: f32 = args
+        .next()
+        .map_or(0.9, |arg| arg.parse().expect("a number"));
+    let mut limit = |most: usize| {
+        args.next()
+            .map_or(most, |arg| arg.parse().expect("a number"))
+    };
     let limits = Limits {
         vertices: limit(Limits::MAX.vertices),
         triangles: limit(Limits::MAX.triangles),
@@ -43,13 +49,23 @@ fn main() {
         let (indices, vertices) = opt::indexed_vertices(&soup);
         let indices: Vec<u32> = indices.iter().map(|&i| u32::try_from(i).unwrap()).collect();
         let meshlets = meshlet::build(&indices, &vertices, limits, threshold, merge);
-        summary("in the order of the file", &meshlets.records, indices.len() / 3, limits);
+        summary(
+            "in the order of the file",
+            &meshlets.records,
+            indices.len() / 3,
+            limits,
+        );
 
         let ordered = opt::optimize_vertex_order(soup);
         let (indices, vertices) = opt::indexed_vertices(&ordered);
         let indices: Vec<u32> = indices.iter().map(|&i| u32::try_from(i).unwrap()).collect();
         let meshlets = meshlet::build(&indices, &vertices, limits, threshold, merge);
-        summary("after optimize_vertex_order", &meshlets.records, indices.len() / 3, limits);
+        summary(
+            "after optimize_vertex_order",
+            &meshlets.records,
+            indices.len() / 3,
+            limits,
+        );
     } else {
         let scene = GltfScene::read_from_file(&path).expect("a readable glTF");
         let mut all = Vec::new();
@@ -70,8 +86,17 @@ fn main() {
             .flat_map(|mesh| mesh.primitives.iter().map(|p| p.indices.len() / 3))
             .collect();
         println!("{} primitives", all.len());
-        let combined = all.iter().flat_map(|m| m.records.iter()).copied().collect::<Vec<_>>();
-        summary("in the order of the indices", &combined, triangles.iter().sum(), limits);
+        let combined = all
+            .iter()
+            .flat_map(|m| m.records.iter())
+            .copied()
+            .collect::<Vec<_>>();
+        summary(
+            "in the order of the indices",
+            &combined,
+            triangles.iter().sum(),
+            limits,
+        );
     }
 }
 

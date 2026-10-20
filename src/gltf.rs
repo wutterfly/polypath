@@ -1424,7 +1424,16 @@ mod tests {
         );
         let one_time = blob.floats(&[0.0], (1, "SCALAR"), r#", "min": [0], "max": [0]"#);
         let turns = blob.floats(
-            &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2],
+            &[
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ],
             (2, "VEC4"),
             "",
         );
@@ -1603,7 +1612,12 @@ mod tests {
             turn.values,
             ChannelValues::Rotations(vec![
                 [0.0, 0.0, 0.0, 1.0],
-                [0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2]
+                [
+                    0.0,
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2
+                ]
             ])
         );
 
