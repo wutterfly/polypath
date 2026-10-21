@@ -80,6 +80,10 @@ pub struct GltfPrimitive {
     pub uvs: Option<Vec<[f32; 2]>>,
     /// Tangent (xyz) and the handedness of the bitangent (w, 1 or -1).
     pub tangents: Option<Vec<[f32; 4]>>,
+    /// The first set of vertex colours (`COLOR_0`), red, green, blue and alpha from 0 to 1 (an RGB
+    /// colour has an alpha of 1), as the file has them: linear numbers, which a program may use for
+    /// something other than a colour. `None` if the file has none.
+    pub colors: Option<Vec<[f32; 4]>>,
     /// Three for each triangle, counter clockwise when seen from the front.
     pub indices: Vec<u32>,
     /// The number of its material in [`GltfScene::materials`], `None` for the default one.
@@ -955,12 +959,16 @@ fn read_primitive(
         .read_tex_coords(0)
         .map(|uvs| uvs.into_f32().collect());
     let tangents: Option<Vec<[f32; 4]>> = reader.read_tangents().map(Iterator::collect);
+    let colors: Option<Vec<[f32; 4]>> = reader
+        .read_colors(0)
+        .map(|colors| colors.into_rgba_f32().collect());
 
     let count = positions.len();
     for (name, len) in [
         ("normals", normals.as_ref().map(Vec::len)),
         ("texture coordinates", uvs.as_ref().map(Vec::len)),
         ("tangents", tangents.as_ref().map(Vec::len)),
+        ("colours", colors.as_ref().map(Vec::len)),
     ] {
         if len.is_some_and(|len| len != count) {
             return Err(Error::Gltf(format!(
@@ -994,6 +1002,7 @@ fn read_primitive(
         normals,
         uvs,
         tangents,
+        colors,
         indices,
         material: primitive.material().index(),
         joints,
@@ -1697,6 +1706,7 @@ mod tests {
         );
         assert_eq!(primitive.normals.as_ref().unwrap().len(), 3);
         assert!(primitive.uvs.is_none() && primitive.tangents.is_none());
+        assert!(primitive.colors.is_none());
         assert_eq!(primitive.indices, [0, 1, 2]);
         assert_eq!(primitive.material, Some(0));
 
@@ -1706,6 +1716,85 @@ mod tests {
         assert!((material.roughness_factor - 0.75).abs() < 1e-6);
         assert!(material.double_sided);
         assert_eq!(material.alpha_mode, AlphaMode::Opaque);
+    }
+
+    /// A triangle whose vertices have colours: four normalized 16-bit numbers each (what Blender writes),
+    /// or three normalized bytes (an RGB colour, whose alpha is 1).
+    fn coloured_triangle_file(rgba16: bool) -> String {
+        let mut data: Vec<u8> = Vec::new();
+        for value in [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            data.extend(value.to_le_bytes());
+        }
+        let colours_at = data.len();
+        if rgba16 {
+            for value in [
+                0_u16, 65_535, 32_768, 65_535, 65_535, 0, 0, 13_107, 0, 0, 65_535, 52_428,
+            ] {
+                data.extend(value.to_le_bytes());
+            }
+        } else {
+            // Each colour padded to four bytes, as glTF wants the elements of an accessor aligned.
+            for colour in [[0_u8, 255, 51], [255, 0, 0], [0, 0, 255]] {
+                data.extend(colour);
+                data.push(0);
+            }
+        }
+        let colours_length = data.len() - colours_at;
+        let (component, kind, stride) = if rgba16 {
+            (5123, "VEC4", "")
+        } else {
+            (5121, "VEC3", r#", "byteStride": 4"#)
+        };
+        let uri = format!(
+            "data:application/octet-stream;base64,{}",
+            base64_encode(&data)
+        );
+        format!(
+            r#"{{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [{{"name": "tri", "mesh": 0}}],
+  "meshes": [{{"primitives": [{{"attributes": {{"POSITION": 0, "COLOR_0": 1}}}}]}}],
+  "buffers": [{{"byteLength": {length}, "uri": "{uri}"}}],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": {colours_at}, "byteLength": {colours_length}{stride}}}
+  ],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0]}},
+    {{"bufferView": 1, "componentType": {component}, "normalized": true, "count": 3, "type": "{kind}"}}
+  ]
+}}"#,
+            length = data.len()
+        )
+    }
+
+    #[test]
+    fn the_colours_of_the_vertices_are_numbers_from_zero_to_one() {
+        let scene =
+            GltfScene::read_from_slice(coloured_triangle_file(true).as_bytes(), Path::new("."))
+                .unwrap();
+        let colours = scene.meshes[0].primitives[0].colors.as_ref().unwrap();
+        let expected = [
+            [0.0, 1.0, 0.5, 1.0],
+            [1.0, 0.0, 0.0, 0.2],
+            [0.0, 0.0, 1.0, 0.8],
+        ];
+        for (colour, expected) in colours.iter().zip(expected) {
+            for (value, wanted) in colour.iter().zip(expected) {
+                assert!((value - wanted).abs() < 1e-4, "{colour:?} {expected:?}");
+            }
+        }
+
+        // An RGB colour of bytes: alpha 1.
+        let scene =
+            GltfScene::read_from_slice(coloured_triangle_file(false).as_bytes(), Path::new("."))
+                .unwrap();
+        let colours = scene.meshes[0].primitives[0].colors.as_ref().unwrap();
+        assert_eq!(colours.len(), 3);
+        assert!((colours[0][1] - 1.0).abs() < 1e-6 && (colours[0][2] - 0.2).abs() < 1e-3);
+        assert!(colours.iter().all(|colour| (colour[3] - 1.0).abs() < 1e-6));
     }
 
     #[test]
