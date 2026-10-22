@@ -25,7 +25,10 @@ use crate::{
 
 /// The version of the algorithm that makes the levels and of the format of the file: a chain that
 /// was baked with another is not read.
-pub const VERSION: u32 = 4;
+///
+/// 5: a change of the texture coordinates is measured by the surface a unit of the texture covers,
+/// not by the size of the mesh.
+pub const VERSION: u32 = 5;
 
 /// The first four bytes of a file of levels.
 const MAGIC: [u8; 4] = *b"PLOD";

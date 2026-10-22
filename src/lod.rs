@@ -31,10 +31,13 @@
 //! error: every vertex remembers, for each of them, how it varied over the triangles that were
 //! merged into it (the way the planes are remembered: a linear function of the position for each
 //! triangle, summed), and a collapse costs how far the vertex it goes to is from those.
-//! [`Settings::normal_weight`] and [`Settings::uv_weight`] say how much that is in the units of
-//! the positions, as a part of the size of the mesh. The error of a level ([`Level::error`])
-//! includes it, so a renderer that shows a level when its error is under a pixel shows it when the
-//! shading is off by under about that too.
+//! [`Settings::normal_weight`] says how much a turn of the normal is in the units of the positions,
+//! as a part of the size of the mesh; [`Settings::uv_weight`] how much a change of the texture
+//! coordinates is, as a part of the surface one unit of the texture covers on the mesh, so that a
+//! texture that slides over the surface by a length is off by about that length, whether it is laid
+//! out once over the mesh or repeated over it a thousand times. The error of a level
+//! ([`Level::error`]) includes it, so a renderer that shows a level when its error is under a pixel
+//! shows it when the shading is off by under about that too.
 //!
 //! # What is kept
 //!
@@ -94,8 +97,12 @@ pub struct Settings {
     /// 10 degrees is as much as 1.7 percent of the size. 0 leaves the normals out. Used when the
     /// vertices have normals.
     pub normal_weight: f32,
-    /// The same for the texture coordinates: a change of 1 (the whole texture) counts as this
-    /// part of the size of the mesh. 0 leaves them out. Used when the vertices have them.
+    /// How much a change of the texture coordinates counts in the error, as a part of the surface
+    /// one unit of them covers on the mesh (the square root of the area of its triangles over the
+    /// area they have in the texture): at 1, a texture that slides by a length over the surface is
+    /// off by that length, however many times it is repeated over the mesh. Where the coordinates
+    /// cover no area (all on a line) a unit is the size of the mesh. 0 leaves them out. Used when the
+    /// vertices have them.
     pub uv_weight: f32,
     /// What a side of a seam costs that has no edge to the place it is collapsed onto, in squared
     /// distances of the collapse (a collapse of length `d` with one such side costs
@@ -447,6 +454,40 @@ impl VertexTerms {
     }
 }
 
+/// How long the surface is, in the units of the positions, that one unit of the texture coordinates
+/// covers on the mesh: the square root of the area of the triangles (the ones of `alive`) over the area
+/// they have in the texture. Small for a texture that is repeated many times over a mesh, about the size
+/// of the mesh for one that is laid out once over it. `None` where the coordinates cover no area (all on
+/// a line, or all the same) or the vertices have none.
+fn texture_unit<V: Vertex>(vertices: &[V], triangles: &[[u32; 3]], alive: &[bool]) -> Option<f64> {
+    let (mut area, mut texture_area) = (0.0_f64, 0.0_f64);
+    for corners in triangles
+        .iter()
+        .zip(alive)
+        .filter(|(_, alive)| **alive)
+        .map(|(corners, _)| corners)
+    {
+        let [a, b, c] = corners.map(|corner| &vertices[corner as usize]);
+        let (Some(ta), Some(tb), Some(tc)) =
+            (a.texture_coord(), b.texture_coord(), c.texture_coord())
+        else {
+            continue;
+        };
+        let [pa, pb, pc] =
+            [a, b, c].map(|vertex| <[f32; 3]>::from(vertex.position()).map(f64::from));
+        let [ta, tb, tc] = [ta, tb, tc].map(|t| <[f32; 2]>::from(t).map(f64::from));
+        let surface = length(cross(sub(pb, pa), sub(pc, pa))) / 2.0;
+        let texture =
+            ((tb[0] - ta[0]) * (tc[1] - ta[1]) - (tc[0] - ta[0]) * (tb[1] - ta[1])).abs() / 2.0;
+        if surface.is_finite() && texture.is_finite() {
+            area += surface;
+            texture_area += texture;
+        }
+    }
+    let unit = (area / texture_area).sqrt();
+    (texture_area > 0.0 && unit.is_finite() && unit > 0.0).then_some(unit)
+}
+
 /// The normals and the texture coordinates of the vertices, and what is remembered of them.
 struct Attributes {
     /// The numbers of each vertex of the mesh (the normal, then the texture coordinates).
@@ -455,15 +496,23 @@ struct Attributes {
     terms: Vec<VertexTerms>,
     /// Which channels are kept (the ones that are asked for, and that are not the same everywhere).
     active: [bool; CHANNELS],
-    /// The square of what a unit of each channel is in the units of the positions.
+    /// The square of what a unit of each channel is in the units of the positions: for the normal a part
+    /// of the size of the mesh, for the texture coordinates a part of the surface one unit of the texture
+    /// covers ([`texture_unit`]).
     scale_squared: [f64; CHANNELS],
     /// What the positions are taken from, so that they are small numbers.
     origin: [f64; 3],
 }
 
 impl Attributes {
-    /// `None` if the vertices have nothing to keep (or it is not asked for).
-    fn new<V: Vertex>(vertices: &[V], places: &[[f64; 3]], settings: &Settings) -> Option<Self> {
+    /// `None` if the vertices have nothing to keep (or it is not asked for). `triangles` are the
+    /// corners of the mesh's triangles, the ones of `alive` the ones in the levels.
+    fn new<V: Vertex>(
+        vertices: &[V],
+        places: &[[f64; 3]],
+        (triangles, alive): (&[[u32; 3]], &[bool]),
+        settings: &Settings,
+    ) -> Option<Self> {
         let normal_weight = f64::from(settings.normal_weight.max(0.0));
         let uv_weight = f64::from(settings.uv_weight.max(0.0));
         if normal_weight <= 0.0 && uv_weight <= 0.0 {
@@ -530,7 +579,10 @@ impl Attributes {
         }
         let extent = length(sub(high, low));
         let origin = std::array::from_fn(|axis| f64::midpoint(low[axis], high[axis]));
-        let scale_squared = std::array::from_fn(|channel| (weights[channel] * extent).powi(2));
+        let texture = texture_unit(vertices, triangles, alive).unwrap_or(extent);
+        let units = [extent, extent, extent, texture, texture];
+        let scale_squared =
+            std::array::from_fn(|channel| (weights[channel] * units[channel]).powi(2));
         Some(Self {
             values,
             terms: vec![VertexTerms::default(); vertices.len()],
@@ -729,7 +781,12 @@ impl State {
             locked: vec![false; place_count],
             attributes: None,
         };
-        state.attributes = Attributes::new(vertices, &state.positions, settings);
+        state.attributes = Attributes::new(
+            vertices,
+            &state.positions,
+            (&state.triangles, &state.alive),
+            settings,
+        );
         state.seam_weight = f64::from(settings.seam_weight.max(0.0));
         state.make_quadrics(
             f64::from(settings.border_weight.max(0.0)),
@@ -1621,6 +1678,106 @@ mod tests {
         };
         let ignored = simplify(&mesh.indices, &vertices, &off);
         assert_eq!(ignored, positions_only);
+    }
+
+    /// A flat grid of `n` by `n` whose texture coordinates are a curve of the position (so that a
+    /// bigger triangle has them wrong between its corners), repeated `times` over it.
+    fn curved_texture(mesh: &Mesh, n: f32, times: f32) -> Vec<Corner> {
+        mesh.positions
+            .iter()
+            .map(|&position| Corner {
+                position,
+                normal: [0.0, 1.0, 0.0],
+                texture_coord: [
+                    (position[0] / n).powi(2) * times,
+                    (position[2] / n).powi(2) * times,
+                ],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_error_of_a_level_does_not_depend_on_how_many_times_its_texture_is_repeated() {
+        // The same flat grid with its texture once over it and repeated a thousand times: the texture
+        // slides the same way over the surface in both, by the same lengths. Its points are moved a
+        // little within the plane, each its own way, so that no two collapses cost the same (a tie is
+        // broken by the rounding, which is not the same at the two scales).
+        let mut mesh = grid(12);
+        for (number, position) in mesh.positions.iter_mut().enumerate() {
+            let number = number as f32;
+            position[0] += ((number * 7.0) % 5.0) * 0.05;
+            position[2] += ((number * 11.0) % 7.0) * 0.04;
+        }
+        let once = curved_texture(&mesh, 12.0, 1.0);
+        let repeated = curved_texture(&mesh, 12.0, 1000.0);
+        let flat = settings(4, 2);
+
+        let a = simplify_with_errors(&mesh.indices, &once, &flat);
+        let b = simplify_with_errors(&mesh.indices, &repeated, &flat);
+
+        assert!(a.len() >= 3, "{} levels", a.len());
+        assert_eq!(a.len(), b.len());
+        for ((indices_a, error_a, _), (indices_b, error_b, _)) in a.iter().zip(&b) {
+            assert_eq!(indices_a.len(), indices_b.len());
+            assert!(
+                (error_a - error_b).abs() <= 1.0e-4 * error_a.max(1.0e-6),
+                "{error_a} against {error_b}"
+            );
+        }
+        // And the error is the texture's: the surface is flat, so the shape has none.
+        let (_, error, geometric) = a.last().unwrap();
+        assert!(
+            *geometric < 1.0e-4 && *error > 1.0e-3,
+            "{geometric} of {error}"
+        );
+    }
+
+    #[test]
+    fn texture_coordinates_on_a_line_are_measured_by_the_size_of_the_mesh() {
+        // The coordinates cover no area of the texture (all on a line): no length a unit of them covers
+        // can be found from the areas, and the size of the mesh is the unit, as it is for the normals.
+        let mesh = grid(12);
+        let vertices: Vec<Corner> = mesh
+            .positions
+            .iter()
+            .map(|&position| Corner {
+                position,
+                normal: [0.0, 1.0, 0.0],
+                texture_coord: [(position[0] / 12.0).powi(2), 0.0],
+            })
+            .collect();
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let alive = vec![true; triangles.len()];
+        assert_eq!(texture_unit(&vertices, &triangles, &alive), None);
+
+        let levels = simplify_with_errors(&mesh.indices, &vertices, &settings(4, 2));
+
+        assert!(levels.len() >= 2);
+        assert!(levels.iter().all(|(_, error, _)| error.is_finite()));
+    }
+
+    #[test]
+    fn a_unit_of_the_texture_is_the_surface_it_covers() {
+        // Coordinates that are the position over 12 on a grid of 12: one unit is 12 long; repeated four
+        // times, a quarter of that.
+        let mesh = grid(12);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let alive = vec![true; triangles.len()];
+        let at = |times: f32| {
+            let vertices: Vec<Corner> = mesh
+                .positions
+                .iter()
+                .map(|&position| Corner {
+                    position,
+                    normal: [0.0, 1.0, 0.0],
+                    texture_coord: [position[0] / 12.0 * times, position[2] / 12.0 * times],
+                })
+                .collect();
+            texture_unit(&vertices, &triangles, &alive).unwrap()
+        };
+
+        assert!((at(1.0) - 12.0).abs() < 1.0e-9, "{}", at(1.0));
+        assert!((at(4.0) - 3.0).abs() < 1.0e-9, "{}", at(4.0));
     }
 
     #[test]
