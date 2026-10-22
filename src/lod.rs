@@ -35,10 +35,12 @@
 //! merged into it (the way the planes are remembered: a linear function of the position for each
 //! triangle, summed), and a collapse costs how far the vertex it goes to is from those.
 //! [`Settings::normal_weight`] says how much a turn of the normal is in the units of the positions,
-//! as a part of the size of the mesh; [`Settings::uv_weight`] how much a change of the texture
-//! coordinates is, as a part of the surface one unit of the texture covers on the mesh, so that a
-//! texture that slides over the surface by a length is off by about that length, whether it is laid
-//! out once over the mesh or repeated over it a thousand times. The error of a level
+//! as a part of the size of the surface it is wrong over (the root of its area: a part that is
+//! tilted by an angle moves its far side by about its length times the angle), so that a detail of
+//! a big mesh counts by its own size and not by the mesh's; [`Settings::uv_weight`] how much a change
+//! of the texture coordinates is, as a part of the surface one unit of the texture covers on the
+//! mesh, so that a texture that slides over the surface by a length is off by about that length,
+//! whether it is laid out once over the mesh or repeated over it a thousand times. The error of a level
 //! ([`Level::error`]) includes it, so a renderer that shows a level when its error is under a pixel
 //! shows it when the shading is off by under about that too.
 //!
@@ -95,10 +97,12 @@ pub struct Settings {
     /// Interior vertices may still collapse onto a locked border. False by default, so a
     /// standalone open surface can simplify its outline with `border_weight` instead.
     pub lock_borders: bool,
-    /// How much a change of the normal counts in the error, as a part of the size of the mesh (the
-    /// diagonal of its box) for a normal that is turned by 1 (about 60 degrees): 0.1 means that
-    /// 10 degrees is as much as 1.7 percent of the size. 0 leaves the normals out. Used when the
-    /// vertices have normals.
+    /// How much a change of the normal counts in the error, as a part of the size of the surface it
+    /// is wrong over: at 1, normals that are turned by 1 (about 60 degrees) over a part of the
+    /// surface of area `A` count as `sqrt(A)`, as if that part were tilted by that much (its far
+    /// side moves by about its length times the turn). A detail of a big mesh counts by its own
+    /// size, not by the mesh's, and the same turn counts for more on the bigger triangles of a
+    /// coarser level. 0 leaves the normals out. Used when the vertices have normals.
     pub normal_weight: f32,
     /// How much a change of the texture coordinates counts in the error, as a part of the surface
     /// one unit of them covers on the mesh (the square root of the area of its triangles over the
@@ -126,7 +130,7 @@ impl Default for Settings {
             min_triangles: 64,
             border_weight: 100.0,
             lock_borders: false,
-            normal_weight: 0.1,
+            normal_weight: 1.0,
             uv_weight: 1.0,
             seam_weight: 1.0,
         }
@@ -500,9 +504,11 @@ struct Attributes {
     terms: Vec<VertexTerms>,
     /// Which channels are kept (the ones that are asked for, and that are not the same everywhere).
     active: [bool; CHANNELS],
-    /// The square of what a unit of each channel is in the units of the positions: for the normal a part
-    /// of the size of the mesh, for the texture coordinates a part of the surface one unit of the texture
-    /// covers ([`texture_unit`]).
+    /// What the squared differences of each channel are multiplied by to be in the units of the
+    /// positions squared: for the texture coordinates the square of a part of the surface one unit
+    /// of the texture covers ([`texture_unit`]), for their mean over the surface that was merged;
+    /// for the normal the square of the weight alone, for their sum over that surface (the mean
+    /// times its area: the root of the area is what a turn is measured by). See [`Self::error`].
     scale_squared: [f64; CHANNELS],
     /// What the positions are taken from, so that they are small numbers.
     origin: [f64; 3],
@@ -584,7 +590,8 @@ impl Attributes {
         let extent = length(sub(high, low));
         let origin = std::array::from_fn(|axis| f64::midpoint(low[axis], high[axis]));
         let texture = texture_unit(vertices, triangles, alive).unwrap_or(extent);
-        let units = [extent, extent, extent, texture, texture];
+        // The normal has no unit of its own: the surface it is wrong over is (see `error`).
+        let units = [1.0, 1.0, 1.0, texture, texture];
         let scale_squared =
             std::array::from_fn(|channel| (weights[channel] * units[channel]).powi(2));
         Some(Self {
@@ -644,11 +651,13 @@ impl Attributes {
     }
 
     /// How far the vertices that `merged` goes to are, at `target`, from what the vertices that
-    /// are merged into them were: the mean squared difference of their normals and texture
-    /// coordinates in the units of the positions squared.
+    /// are merged into them were, in the units of the positions squared: the mean squared
+    /// difference of their texture coordinates over the surface that was merged into them, and the
+    /// squared difference of their normals summed over it (the mean times the area: a turn over a
+    /// part of the surface counts by the size of that part), each times its `scale_squared`.
     fn error(&self, merged: &[(u32, u32)], target: [f64; 3]) -> f64 {
         let p = sub(target, self.origin);
-        let (mut sum, mut weight) = (0.0, 0.0);
+        let (mut texture, mut normal, mut weight) = (0.0, 0.0, 0.0);
         for &(from, to) in merged {
             let mut terms = self.terms[from as usize];
             terms.add(&self.terms[to as usize]);
@@ -670,10 +679,19 @@ impl Attributes {
                     - 2.0 * a * (dot(t.g1, p) + t.d1)
                     + a * a * terms.weight;
                 // A sum of squares: a hair under 0 is rounding.
-                sum += value.max(0.0) * self.scale_squared[channel];
+                let value = value.max(0.0) * self.scale_squared[channel];
+                if channel < 3 {
+                    normal += value;
+                } else {
+                    texture += value;
+                }
             }
         }
-        if weight > 0.0 { sum / weight } else { 0.0 }
+        if weight > 0.0 {
+            texture / weight + normal
+        } else {
+            0.0
+        }
     }
 
     /// The vertices that are merged: what each remembers goes to the one it goes to.
@@ -1735,7 +1753,7 @@ mod tests {
     #[test]
     fn texture_coordinates_on_a_line_are_measured_by_the_size_of_the_mesh() {
         // The coordinates cover no area of the texture (all on a line): no length a unit of them covers
-        // can be found from the areas, and the size of the mesh is the unit, as it is for the normals.
+        // can be found from the areas, and the size of the mesh is the unit.
         let mesh = grid(12);
         let vertices: Vec<Corner> = mesh
             .positions
@@ -1778,6 +1796,53 @@ mod tests {
 
         assert!((at(1.0) - 12.0).abs() < 1.0e-9, "{}", at(1.0));
         assert!((at(4.0) - 3.0).abs() < 1.0e-9, "{}", at(4.0));
+    }
+
+    #[test]
+    fn a_turn_of_the_normal_costs_by_the_surface_it_is_on_and_not_the_size_of_the_mesh() {
+        // A flat patch whose normals lean more and more across it, alone and with a triangle far
+        // away that makes the mesh a thousand times as big: a collapse in the patch merges the same
+        // triangles in both, and its shading costs the same.
+        let mesh = grid(6);
+        let lean = |position: [f32; 3]| {
+            let n = [position[0] / 6.0 - 0.5, 1.0, position[2] / 6.0 - 0.5];
+            let size = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            n.map(|value| value / size)
+        };
+        let patch: Vec<Corner> = mesh
+            .positions
+            .iter()
+            .map(|&position| Corner {
+                position,
+                normal: lean(position),
+                texture_coord: [0.0, 0.0],
+            })
+            .collect();
+        let mut with_far = patch.clone();
+        let mut far_indices = mesh.indices.clone();
+        let first = u32::try_from(with_far.len()).unwrap();
+        for position in [[5000.0, 0.0, 0.0], [5001.0, 0.0, 0.0], [5000.0, 0.0, 1.0]] {
+            with_far.push(Corner {
+                position,
+                normal: [0.0, 1.0, 0.0],
+                texture_coord: [0.0, 0.0],
+            });
+        }
+        far_indices.extend([first, first + 2, first + 1]);
+
+        let alone = State::new(&mesh.indices, &patch, &settings(1, 2));
+        let big = State::new(&far_indices, &with_far, &settings(1, 2));
+        let cheapest = *alone.heap.peek().unwrap();
+        let shading = |state: &State| {
+            let (plan, _) = state.plan(cheapest.from, cheapest.to).unwrap();
+            plan.error - plan.geometric
+        };
+
+        let (a, b) = (shading(&alone), shading(&big));
+        assert!(a > 0.0, "the normals turn: the collapse costs something");
+        // The same up to the rounding of positions that are measured from a middle 2,500 away (by the
+        // size of the mesh they would be some 300,000 times apart).
+        assert!((a - b).abs() <= 1.0e-5 * a, "{a} against {b}");
     }
 
     #[test]
