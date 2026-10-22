@@ -10,6 +10,9 @@
 //! every vertex remembers the planes of the triangles that touch it, and moving it onto a
 //! neighbour costs the sum of the squared distances of the new place to those planes. The cheapest
 //! collapse is always done next, so what is flat goes first and what is the shape of the thing stays.
+//! A collapse waits in a queue at what it cost when it was put there; what is around it can change
+//! while it waits, so when its turn comes its cost is worked out again, and if it is more now it goes
+//! back to wait at that.
 //!
 //! # Seams
 //!
@@ -360,6 +363,7 @@ fn length(a: [f64; 3]) -> f64 {
 /// A candidate collapse in the queue: move place `from` onto place `to`.
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
+    /// What it cost when it was put in the queue.
     cost: f64,
     from: u32,
     to: u32,
@@ -1131,23 +1135,7 @@ impl State {
     /// Does the collapses, cheapest first, until `target` triangles are left or none can be done.
     fn collapse_until(&mut self, target: usize) {
         loop {
-            while self.alive_triangles > target {
-                let Some(candidate) = self.heap.pop() else {
-                    break;
-                };
-                let (from, to) = (candidate.from as usize, candidate.to as usize);
-                if self.gone[from]
-                    || self.gone[to]
-                    || candidate.versions != (self.version[from], self.version[to])
-                {
-                    continue;
-                }
-                // What the neighbours did since is checked again: the plan is made now.
-                let Some((plan, _)) = self.plan(candidate.from, candidate.to) else {
-                    continue;
-                };
-                self.apply(candidate.from, candidate.to, &plan);
-            }
+            while self.alive_triangles > target && self.collapse_next() {}
             if self.alive_triangles <= target {
                 return;
             }
@@ -1159,31 +1147,43 @@ impl State {
             if self.heap.is_empty() {
                 return;
             }
-            self.collapse_pass(target);
+            while self.alive_triangles > target && self.collapse_next() {}
             if self.alive_triangles >= before {
                 return;
             }
         }
     }
 
-    /// One go over the queue (see [`collapse_until`](Self::collapse_until)).
-    fn collapse_pass(&mut self, target: usize) {
-        while self.alive_triangles > target {
-            let Some(candidate) = self.heap.pop() else {
-                return;
-            };
-            let (from, to) = (candidate.from as usize, candidate.to as usize);
-            if self.gone[from]
-                || self.gone[to]
-                || candidate.versions != (self.version[from], self.version[to])
-            {
-                continue;
-            }
-            let Some((plan, _)) = self.plan(candidate.from, candidate.to) else {
-                continue;
-            };
-            self.apply(candidate.from, candidate.to, &plan);
+    /// Takes the cheapest collapse out of the queue and does it, if it can still be done and costs
+    /// no more than it was queued at. `false` when the queue is empty.
+    ///
+    /// Its two places have not changed since it was queued (a collapse onto either makes it stale),
+    /// but what is around them may have: a neighbour collapsed onto a third place. So the plan is
+    /// made again now, and it can cost more than it did: a side of a seam that has no edge to `to`
+    /// takes the vertex of `to` it is next to across the surface, and when a triangle that it was
+    /// next to through is gone it takes another one, which can be on the other side of the seam
+    /// (another part of the texture). Then this is not the cheapest collapse any more: it goes back in
+    /// the queue at what it costs now, and waits for its turn.
+    fn collapse_next(&mut self) -> bool {
+        let Some(candidate) = self.heap.pop() else {
+            return false;
+        };
+        let (from, to) = (candidate.from as usize, candidate.to as usize);
+        if self.gone[from]
+            || self.gone[to]
+            || candidate.versions != (self.version[from], self.version[to])
+        {
+            return true;
         }
+        let Some((plan, cost)) = self.plan(candidate.from, candidate.to) else {
+            return true;
+        };
+        if cost > candidate.cost {
+            self.heap.push(Candidate { cost, ..candidate });
+            return true;
+        }
+        self.apply(candidate.from, candidate.to, &plan);
+        true
     }
 
     /// Collapses `from` onto `to` as `plan` says, and puts what changed in the queue.
@@ -1858,5 +1858,78 @@ mod tests {
             assert_eq!(a, b);
         }
         assert!(levels[1].meshlets.indices.len() < levels[0].meshlets.indices.len());
+    }
+
+    /// The cheapest collapse of a sphere, and a dearer one away from it: no place of one is a place
+    /// or a neighbour of the other's, so doing one does not change what the other is.
+    fn two_collapses_apart(state: &State) -> (Candidate, Candidate) {
+        let queued = state.heap.clone().into_sorted_vec();
+        // The queue's order is the cheapest last.
+        let cheap = *queued.last().unwrap();
+        let near: Vec<u32> = [cheap.from, cheap.to]
+            .into_iter()
+            .flat_map(|place| {
+                let mut around = state.neighbours(place);
+                around.push(place);
+                around
+            })
+            .collect();
+        let dear = *queued
+            .iter()
+            .find(|candidate| {
+                candidate.cost > cheap.cost * 1.5
+                    && !near.contains(&candidate.from)
+                    && !near.contains(&candidate.to)
+            })
+            .unwrap();
+        assert!(cheap.cost > 0.0);
+        (cheap, dear)
+    }
+
+    #[test]
+    fn a_collapse_that_costs_more_when_its_turn_comes_waits_for_it_again() {
+        let mesh = sphere(8, 12);
+        let mut state = State::new(&mesh.indices, &mesh.positions, &settings(1, 4));
+        let (cheap, dear) = two_collapses_apart(&state);
+        // The dear one as it is in the queue when what is around it changed after it was put there
+        // and made it dearer: at less than the cheap one.
+        state.heap.clear();
+        state.heap.push(cheap);
+        state.heap.push(Candidate {
+            cost: cheap.cost / 2.0,
+            ..dear
+        });
+        let alive = state.alive_triangles;
+
+        // It comes out first and is not done: it goes back in at what it costs.
+        assert!(state.collapse_next());
+        assert_eq!(state.alive_triangles, alive);
+        assert!(state.heap.iter().any(|candidate| {
+            (candidate.from, candidate.to, candidate.cost) == (dear.from, dear.to, dear.cost)
+        }));
+        // So the cheap one is done before it.
+        assert!(state.collapse_next());
+        assert!(state.gone[cheap.from as usize]);
+        assert!(!state.gone[dear.from as usize]);
+    }
+
+    #[test]
+    fn a_collapse_that_costs_what_it_was_queued_at_or_less_is_done() {
+        let mesh = sphere(8, 12);
+        let mut state = State::new(&mesh.indices, &mesh.positions, &settings(1, 4));
+        let (cheap, dear) = two_collapses_apart(&state);
+        // One at what it costs.
+        state.heap.clear();
+        state.heap.push(cheap);
+        assert!(state.collapse_next());
+        assert!(state.gone[cheap.from as usize]);
+        // And one at more (what is around it made it cheaper since).
+        state.heap.clear();
+        state.heap.push(Candidate {
+            cost: dear.cost * 2.0,
+            ..dear
+        });
+        assert!(state.collapse_next());
+        assert!(state.gone[dear.from as usize]);
     }
 }

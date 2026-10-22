@@ -27,8 +27,9 @@ use crate::{
 /// was baked with another is not read.
 ///
 /// 5: a change of the texture coordinates is measured by the surface a unit of the texture covers,
-/// not by the size of the mesh.
-pub const VERSION: u32 = 5;
+/// not by the size of the mesh. 6: a collapse that costs more when its turn comes than when it was
+/// queued goes back in the queue instead of being done.
+pub const VERSION: u32 = 6;
 
 /// The first four bytes of a file of levels.
 const MAGIC: [u8; 4] = *b"PLOD";
