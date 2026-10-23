@@ -3,7 +3,8 @@
 //! It reads `.gltf` (with its `.bin` files and pictures next to it) and the single file `.glb`, and
 //! gives plain data: the triangles of every mesh, the materials, where the pictures are, where each
 //! node puts each mesh in the world (with what makes a material a glass: `KHR_materials_transmission`,
-//! `KHR_materials_ior` and `KHR_materials_volume`), the scene's lights (`KHR_lights_punctual`), cameras and the
+//! `KHR_materials_ior` and `KHR_materials_volume`; and `KHR_materials_specular`), the scene's lights
+//! (`KHR_lights_punctual`), cameras and the
 //! nodes that carry properties of their own (glTF's `extras`: Blender's custom properties), and what
 //! a skinned mesh needs: the nodes as a hierarchy, the skins (the joints and their inverse bind
 //! matrices), the joints and weights of every vertex, and the animations (the keys of each moved
@@ -407,6 +408,15 @@ pub struct GltfMaterial {
     /// does not say: none is absorbed), and that colour, linear (white where the file does not say).
     pub attenuation_distance: f32,
     pub attenuation_color: [f32; 3],
+    /// How strong the specular layer of what is not a metal is, 0 to 1 (`KHR_materials_specular`: 1 where the file does
+    /// not say), multiplied with the **alpha** channel of its picture.
+    pub specular_factor: f32,
+    pub specular: Option<TextureRef>,
+    /// The colour of the reflection of what is not a metal at a right angle, a factor of what its index makes it,
+    /// linear (white where the file does not say), multiplied with the red, green and blue of its picture (in the sRGB
+    /// curve).
+    pub specular_color_factor: [f32; 3],
+    pub specular_color: Option<TextureRef>,
 }
 
 /// Where the bytes of a picture are.
@@ -918,6 +928,7 @@ fn read_material(material: &gltf::Material) -> GltfMaterial {
     let occlusion = material.occlusion_texture();
     let transmission = material.transmission();
     let volume = material.volume();
+    let specular = material.specular();
     GltfMaterial {
         name: material.name().map(str::to_owned),
         base_color_factor: pbr.base_color_factor(),
@@ -969,6 +980,20 @@ fn read_material(material: &gltf::Material) -> GltfMaterial {
         attenuation_color: volume
             .as_ref()
             .map_or([1.0; 3], gltf::material::Volume::attenuation_color),
+        specular_factor: specular
+            .as_ref()
+            .map_or(1.0, gltf::material::Specular::specular_factor),
+        specular: specular
+            .as_ref()
+            .and_then(gltf::material::Specular::specular_texture)
+            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+        specular_color_factor: specular
+            .as_ref()
+            .map_or([1.0; 3], gltf::material::Specular::specular_color_factor),
+        specular_color: specular
+            .as_ref()
+            .and_then(gltf::material::Specular::specular_color_texture)
+            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
     }
 }
 
@@ -1292,6 +1317,46 @@ mod tests {
         assert_eq!(plain.thickness, None);
         assert_eq!(plain.attenuation_distance, f32::INFINITY);
         assert_eq!(plain.attenuation_color, [1.0; 3]);
+    }
+
+    /// A material with what `KHR_materials_specular` says, each with a picture, and a plain one.
+    const SPECULAR: &str = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_specular"],
+  "images": [{"uri": "specular.png"}, {"uri": "specular_color.png"}],
+  "textures": [{"source": 0}, {"source": 1}],
+  "materials": [
+    {"name": "coated", "extensions": {"KHR_materials_specular": {
+      "specularFactor": 0.25, "specularTexture": {"index": 0},
+      "specularColorFactor": [1.0, 0.5, 0.25], "specularColorTexture": {"index": 1, "texCoord": 1}}}},
+    {"name": "plain"}
+  ]
+}"#;
+
+    #[test]
+    fn a_specular_material_has_its_strength_and_its_colour_and_a_plain_one_the_defaults() {
+        let folder = std::env::temp_dir().join(format!("polypath_specular_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["specular.png", "specular_color.png"] {
+            std::fs::write(folder.join(name), [0_u8]).unwrap();
+        }
+        let scene = GltfScene::read_from_slice(SPECULAR.as_bytes(), &folder).unwrap();
+        let _ = std::fs::remove_dir_all(&folder);
+
+        let coated = &scene.materials[0];
+        assert!((coated.specular_factor - 0.25).abs() < 1e-6);
+        assert_eq!(coated.specular.map(|map| map.image), Some(0));
+        assert!(close(coated.specular_color_factor, [1.0, 0.5, 0.25]));
+        assert_eq!(
+            coated.specular_color.map(|map| (map.image, map.tex_coord)),
+            Some((1, 1))
+        );
+
+        let plain = &scene.materials[1];
+        assert_eq!(plain.specular_factor, 1.0);
+        assert_eq!(plain.specular, None);
+        assert_eq!(plain.specular_color_factor, [1.0; 3]);
+        assert_eq!(plain.specular_color, None);
     }
 
     fn close(a: [f32; 3], b: [f32; 3]) -> bool {
