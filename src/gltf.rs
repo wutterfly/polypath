@@ -2,7 +2,8 @@
 //!
 //! It reads `.gltf` (with its `.bin` files and pictures next to it) and the single file `.glb`, and
 //! gives plain data: the triangles of every mesh, the materials, where the pictures are, where each
-//! node puts each mesh in the world, the scene's lights (`KHR_lights_punctual`), cameras and the
+//! node puts each mesh in the world (with what makes a material a glass: `KHR_materials_transmission`,
+//! `KHR_materials_ior` and `KHR_materials_volume`), the scene's lights (`KHR_lights_punctual`), cameras and the
 //! nodes that carry properties of their own (glTF's `extras`: Blender's custom properties), and what
 //! a skinned mesh needs: the nodes as a hierarchy, the skins (the joints and their inverse bind
 //! matrices), the joints and weights of every vertex, and the animations (the keys of each moved
@@ -391,6 +392,21 @@ pub struct GltfMaterial {
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    /// How much of the light that the surface does not reflect goes through it rather than into it, 0 to 1
+    /// (`KHR_materials_transmission`: 0 where the file does not say), multiplied with the **red** channel of its picture.
+    pub transmission_factor: f32,
+    pub transmission: Option<TextureRef>,
+    /// The index of refraction (`KHR_materials_ior`): 1.5 where the file does not say.
+    pub ior: f32,
+    /// How thick the volume under the surface is, in the units of the mesh (`KHR_materials_volume`): 0 for a surface as
+    /// thin as a sheet, which bends nothing (and where the file does not say); multiplied with the **green** channel of
+    /// its picture.
+    pub thickness_factor: f32,
+    pub thickness: Option<TextureRef>,
+    /// How far light goes through the volume before only `attenuation_color` of it is left (infinite where the file
+    /// does not say: none is absorbed), and that colour, linear (white where the file does not say).
+    pub attenuation_distance: f32,
+    pub attenuation_color: [f32; 3],
 }
 
 /// Where the bytes of a picture are.
@@ -900,6 +916,8 @@ fn read_material(material: &gltf::Material) -> GltfMaterial {
     let pbr = material.pbr_metallic_roughness();
     let normal = material.normal_texture();
     let occlusion = material.occlusion_texture();
+    let transmission = material.transmission();
+    let volume = material.volume();
     GltfMaterial {
         name: material.name().map(str::to_owned),
         base_color_factor: pbr.base_color_factor(),
@@ -931,6 +949,26 @@ fn read_material(material: &gltf::Material) -> GltfMaterial {
         },
         alpha_cutoff: material.alpha_cutoff().unwrap_or(0.5),
         double_sided: material.double_sided(),
+        transmission_factor: transmission
+            .as_ref()
+            .map_or(0.0, gltf::material::Transmission::transmission_factor),
+        transmission: transmission
+            .and_then(|transmission| transmission.transmission_texture())
+            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+        ior: material.ior().unwrap_or(1.5),
+        thickness_factor: volume
+            .as_ref()
+            .map_or(0.0, gltf::material::Volume::thickness_factor),
+        thickness: volume
+            .as_ref()
+            .and_then(gltf::material::Volume::thickness_texture)
+            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+        attenuation_distance: volume
+            .as_ref()
+            .map_or(f32::INFINITY, gltf::material::Volume::attenuation_distance),
+        attenuation_color: volume
+            .as_ref()
+            .map_or([1.0; 3], gltf::material::Volume::attenuation_color),
     }
 }
 
@@ -1204,6 +1242,57 @@ mod tests {
     {"name": "FX", "translation": [4, 0, -2], "extras": {"effect": "sparks", "rate": 0.5, "heat": true, "list": [1]}}
   ]
 }"#;
+
+    /// Two materials: a glass with what all three of glTF's extensions of glass say, each with a picture; and a plain
+    /// one, which has what they say where a file does not.
+    const GLASS: &str = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_transmission", "KHR_materials_ior", "KHR_materials_volume"],
+  "images": [{"uri": "transmission.png"}, {"uri": "thickness.png"}],
+  "textures": [{"source": 0}, {"source": 1}],
+  "materials": [
+    {"name": "glass", "extensions": {
+      "KHR_materials_transmission": {"transmissionFactor": 0.9, "transmissionTexture": {"index": 0}},
+      "KHR_materials_ior": {"ior": 1.33},
+      "KHR_materials_volume": {"thicknessFactor": 0.25, "thicknessTexture": {"index": 1, "texCoord": 1},
+                               "attenuationDistance": 2.0, "attenuationColor": [0.5, 0.8, 0.6]}}},
+    {"name": "plain"}
+  ]
+}"#;
+
+    #[test]
+    fn a_glass_has_its_transmission_its_index_and_its_volume_and_a_plain_material_glass_s_defaults()
+    {
+        // The pictures are where the file says (they are not decoded: a byte each is enough).
+        let folder = std::env::temp_dir().join(format!("polypath_glass_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["transmission.png", "thickness.png"] {
+            std::fs::write(folder.join(name), [0_u8]).unwrap();
+        }
+        let scene = GltfScene::read_from_slice(GLASS.as_bytes(), &folder).unwrap();
+        let _ = std::fs::remove_dir_all(&folder);
+
+        let glass = &scene.materials[0];
+        assert!((glass.transmission_factor - 0.9).abs() < 1e-6);
+        assert_eq!(glass.transmission.map(|map| map.image), Some(0));
+        assert!((glass.ior - 1.33).abs() < 1e-6);
+        assert!((glass.thickness_factor - 0.25).abs() < 1e-6);
+        assert_eq!(
+            glass.thickness.map(|map| (map.image, map.tex_coord)),
+            Some((1, 1))
+        );
+        assert!((glass.attenuation_distance - 2.0).abs() < 1e-6);
+        assert!(close(glass.attenuation_color, [0.5, 0.8, 0.6]));
+
+        let plain = &scene.materials[1];
+        assert_eq!(plain.transmission_factor, 0.0);
+        assert_eq!(plain.transmission, None);
+        assert_eq!(plain.ior, 1.5);
+        assert_eq!(plain.thickness_factor, 0.0);
+        assert_eq!(plain.thickness, None);
+        assert_eq!(plain.attenuation_distance, f32::INFINITY);
+        assert_eq!(plain.attenuation_color, [1.0; 3]);
+    }
 
     fn close(a: [f32; 3], b: [f32; 3]) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
