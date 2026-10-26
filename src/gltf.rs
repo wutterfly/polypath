@@ -3,7 +3,8 @@
 //! It reads `.gltf` (with its `.bin` files and pictures next to it) and the single file `.glb`, and
 //! gives plain data: the triangles of every mesh, the materials, where the pictures are, where each
 //! node puts each mesh in the world (with what makes a material a glass: `KHR_materials_transmission`,
-//! `KHR_materials_ior` and `KHR_materials_volume`; and `KHR_materials_specular`), the scene's lights
+//! `KHR_materials_ior` and `KHR_materials_volume`; `KHR_materials_specular`; and how strong what it gives off is,
+//! `KHR_materials_emissive_strength`), the scene's lights
 //! (`KHR_lights_punctual`), cameras and the
 //! nodes that carry properties of their own (glTF's `extras`: Blender's custom properties), and what
 //! a skinned mesh needs: the nodes as a hierarchy, the skins (the joints and their inverse bind
@@ -389,7 +390,11 @@ pub struct GltfMaterial {
     pub occlusion: Option<TextureRef>,
     pub occlusion_strength: f32,
     pub emissive: Option<TextureRef>,
+    /// Linear, multiplied with the picture; each channel 0 to 1, as glTF's core holds it.
     pub emissive_factor: [f32; 3],
+    /// How many times brighter than `emissive_factor` says the surface glows (`KHR_materials_emissive_strength`: 1
+    /// where the file does not say, and not held to 1): what it gives off is the picture times the factor times this.
+    pub emissive_strength: f32,
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
@@ -953,6 +958,7 @@ fn read_material(material: &gltf::Material) -> GltfMaterial {
             .emissive_texture()
             .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
         emissive_factor: material.emissive_factor(),
+        emissive_strength: material.emissive_strength().unwrap_or(1.0),
         alpha_mode: match material.alpha_mode() {
             gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
             gltf::material::AlphaMode::Mask => AlphaMode::Mask,
@@ -1357,6 +1363,29 @@ mod tests {
         assert_eq!(plain.specular, None);
         assert_eq!(plain.specular_color_factor, [1.0; 3]);
         assert_eq!(plain.specular_color, None);
+    }
+
+    /// A material that glows four times as strong as its factor says, and a plain one.
+    const EMISSIVE_STRENGTH: &str = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_emissive_strength"],
+  "materials": [
+    {"name": "lamp", "emissiveFactor": [1.0, 0.5, 0.25],
+     "extensions": {"KHR_materials_emissive_strength": {"emissiveStrength": 4.0}}},
+    {"name": "plain", "emissiveFactor": [1.0, 0.5, 0.25]}
+  ]
+}"#;
+
+    #[test]
+    fn a_material_has_its_emissive_strength_and_a_plain_one_a_strength_of_1() {
+        let scene =
+            GltfScene::read_from_slice(EMISSIVE_STRENGTH.as_bytes(), Path::new(".")).unwrap();
+        let (lamp, plain) = (&scene.materials[0], &scene.materials[1]);
+        // The factor is as the file has it, and the strength beside it.
+        assert!(close(lamp.emissive_factor, [1.0, 0.5, 0.25]));
+        assert!((lamp.emissive_strength - 4.0).abs() < 1e-6);
+        assert!(close(plain.emissive_factor, [1.0, 0.5, 0.25]));
+        assert_eq!(plain.emissive_strength, 1.0);
     }
 
     fn close(a: [f32; 3], b: [f32; 3]) -> bool {
