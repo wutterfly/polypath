@@ -112,6 +112,14 @@ pub trait Vertex {
     fn texture_coord(&self) -> Option<(f32, f32)> {
         None
     }
+
+    /// A second set of texture coordinates, if the vertex has one: a map laid out on another unwrap of the mesh (an
+    /// occlusion baked once over it, where the first set repeats a pattern). Kept like the first, with a unit of its
+    /// own.
+    #[inline]
+    fn second_texture_coord(&self) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 impl Vertex for VertexTextureData {

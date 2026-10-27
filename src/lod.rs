@@ -30,7 +30,8 @@
 //! replaced interpolates the normals and texture coordinates of its corners over a longer way.
 //! Where those change fast (a rounded body of many thin triangles, a bevel, a pattern) that is a
 //! different picture even if the surface is where it was. When the vertices have normals and
-//! texture coordinates ([`Vertex::normal`], [`Vertex::texture_coord`]), they are part of the
+//! texture coordinates ([`Vertex::normal`], [`Vertex::texture_coord`], and a second set of them,
+//! [`Vertex::second_texture_coord`], each set with a unit of its own), they are part of the
 //! error: every vertex remembers, for each of them, how it varied over the triangles that were
 //! merged into it (the way the planes are remembered: a linear function of the position for each
 //! triangle, summed), and a collapse costs how far the vertex it goes to is from those.
@@ -146,6 +147,8 @@ pub struct Corner {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub texture_coord: [f32; 2],
+    /// The second set of texture coordinates, for a mesh that has one that is not a copy of the first.
+    pub second_texture_coord: Option<[f32; 2]>,
 }
 
 impl Vertex for Corner {
@@ -162,6 +165,11 @@ impl Vertex for Corner {
     #[inline]
     fn texture_coord(&self) -> Option<(f32, f32)> {
         Some(<(f32, f32)>::from(self.texture_coord))
+    }
+
+    #[inline]
+    fn second_texture_coord(&self) -> Option<(f32, f32)> {
+        self.second_texture_coord.map(<(f32, f32)>::from)
     }
 }
 
@@ -414,8 +422,9 @@ struct Plan {
     merged: Vec<(u32, u32)>,
 }
 
-/// How many numbers a vertex has that are kept: the normal (3) and the texture coordinates (2).
-const CHANNELS: usize = 5;
+/// How many numbers a vertex has that are kept: the normal (3), the texture coordinates (2) and the second set of
+/// them (2). The channels after the normal's are texture coordinates (see [`Attributes::error`]).
+const CHANNELS: usize = 7;
 
 /// What one number of a vertex (a channel) was over the triangles that were merged into a vertex:
 /// each triangle has it as a linear function of the position, `g . p + d`, and what is kept is the
@@ -468,6 +477,16 @@ impl VertexTerms {
 /// of the mesh for one that is laid out once over it. `None` where the coordinates cover no area (all on
 /// a line, or all the same) or the vertices have none.
 fn texture_unit<V: Vertex>(vertices: &[V], triangles: &[[u32; 3]], alive: &[bool]) -> Option<f64> {
+    unit_of(vertices, triangles, alive, Vertex::texture_coord)
+}
+
+/// The same for the set of texture coordinates `set` gives of a vertex.
+fn unit_of<V: Vertex>(
+    vertices: &[V],
+    triangles: &[[u32; 3]],
+    alive: &[bool],
+    set: fn(&V) -> Option<(f32, f32)>,
+) -> Option<f64> {
     let (mut area, mut texture_area) = (0.0_f64, 0.0_f64);
     for corners in triangles
         .iter()
@@ -476,9 +495,7 @@ fn texture_unit<V: Vertex>(vertices: &[V], triangles: &[[u32; 3]], alive: &[bool
         .map(|(corners, _)| corners)
     {
         let [a, b, c] = corners.map(|corner| &vertices[corner as usize]);
-        let (Some(ta), Some(tb), Some(tc)) =
-            (a.texture_coord(), b.texture_coord(), c.texture_coord())
-        else {
+        let (Some(ta), Some(tb), Some(tc)) = (set(a), set(b), set(c)) else {
             continue;
         };
         let [pa, pb, pc] =
@@ -498,7 +515,7 @@ fn texture_unit<V: Vertex>(vertices: &[V], triangles: &[[u32; 3]], alive: &[bool
 
 /// The normals and the texture coordinates of the vertices, and what is remembered of them.
 struct Attributes {
-    /// The numbers of each vertex of the mesh (the normal, then the texture coordinates).
+    /// The numbers of each vertex of the mesh (the normal, then the texture coordinates, then the second set).
     values: Vec<[f64; CHANNELS]>,
     /// What each vertex stands for.
     terms: Vec<VertexTerms>,
@@ -537,6 +554,9 @@ impl Attributes {
             let uv = vertex
                 .texture_coord()
                 .map(|t| <[f32; 2]>::from(t).map(f64::from));
+            let second = vertex
+                .second_texture_coord()
+                .map(|t| <[f32; 2]>::from(t).map(f64::from));
             if let Some(normal) = normal {
                 value[..3].copy_from_slice(&normal);
             }
@@ -544,11 +564,15 @@ impl Attributes {
                 value[3] = uv[0];
                 value[4] = uv[1];
             }
+            if let Some(second) = second {
+                value[5] = second[0];
+                value[6] = second[1];
+            }
             for channel in 0..CHANNELS {
-                let has = if channel < 3 {
-                    normal.is_some()
-                } else {
-                    uv.is_some()
+                let has = match channel {
+                    0..3 => normal.is_some(),
+                    3..5 => uv.is_some(),
+                    _ => second.is_some(),
                 };
                 if !has || !value[channel].is_finite() {
                     continue;
@@ -565,6 +589,8 @@ impl Attributes {
             normal_weight,
             normal_weight,
             normal_weight,
+            uv_weight,
+            uv_weight,
             uv_weight,
             uv_weight,
         ];
@@ -590,8 +616,11 @@ impl Attributes {
         let extent = length(sub(high, low));
         let origin = std::array::from_fn(|axis| f64::midpoint(low[axis], high[axis]));
         let texture = texture_unit(vertices, triangles, alive).unwrap_or(extent);
+        // The second set has a unit of its own: it can be laid out once where the first repeats.
+        let second =
+            unit_of(vertices, triangles, alive, Vertex::second_texture_coord).unwrap_or(extent);
         // The normal has no unit of its own: the surface it is wrong over is (see `error`).
-        let units = [1.0, 1.0, 1.0, texture, texture];
+        let units = [1.0, 1.0, 1.0, texture, texture, second, second];
         let scale_squared =
             std::array::from_fn(|channel| (weights[channel] * units[channel]).powi(2));
         Some(Self {
@@ -1637,6 +1666,7 @@ mod tests {
                 position,
                 normal: normal(index),
                 texture_coord: [position[0] / 12.0, position[2] / 12.0],
+                second_texture_coord: None,
             })
             .collect()
     }
@@ -1710,6 +1740,7 @@ mod tests {
                     (position[0] / n).powi(2) * times,
                     (position[2] / n).powi(2) * times,
                 ],
+                second_texture_coord: None,
             })
             .collect()
     }
@@ -1751,6 +1782,67 @@ mod tests {
     }
 
     #[test]
+    fn a_second_set_of_texture_coordinates_is_part_of_the_error_with_a_unit_of_its_own() {
+        // A flat grid whose first set is right on any triangle (linear) and whose second set is a curve: the levels are
+        // off by the second set alone, and as much whether it is laid out once or repeated a thousand times.
+        let mut mesh = grid(12);
+        for (number, position) in mesh.positions.iter_mut().enumerate() {
+            let number = number as f32;
+            position[0] += ((number * 7.0) % 5.0) * 0.05;
+            position[2] += ((number * 11.0) % 7.0) * 0.04;
+        }
+        let with_second = |times: Option<f32>| -> Vec<Corner> {
+            mesh.positions
+                .iter()
+                .map(|&position| Corner {
+                    position,
+                    normal: [0.0, 1.0, 0.0],
+                    texture_coord: [position[0] / 12.0, position[2] / 12.0],
+                    second_texture_coord: times.map(|times| {
+                        [
+                            (position[0] / 12.0).powi(2) * times,
+                            (position[2] / 12.0).powi(2) * times,
+                        ]
+                    }),
+                })
+                .collect()
+        };
+        let flat = settings(4, 2);
+        let without = simplify_with_errors(&mesh.indices, &with_second(None), &flat);
+        let once = simplify_with_errors(&mesh.indices, &with_second(Some(1.0)), &flat);
+        let repeated = simplify_with_errors(&mesh.indices, &with_second(Some(1000.0)), &flat);
+
+        // Without it a bigger triangle has all of it right; with it, it is off.
+        assert!(
+            without.last().unwrap().1 < 1.0e-3,
+            "{}",
+            without.last().unwrap().1
+        );
+        assert!(once.len() >= 3, "{} levels", once.len());
+        let (_, error, geometric) = once.last().unwrap();
+        assert!(
+            *geometric < 1.0e-4 && *error > 1.0e-3,
+            "{geometric} of {error}"
+        );
+        assert_eq!(once.len(), repeated.len());
+        for ((a_indices, a_error, _), (b_indices, b_error, _)) in once.iter().zip(&repeated) {
+            assert_eq!(a_indices.len(), b_indices.len());
+            assert!(
+                (a_error - b_error).abs() <= 1.0e-4 * a_error.max(1.0e-6),
+                "{a_error} against {b_error}"
+            );
+        }
+        // As the first set would be: the first set curved and no second gives the same levels.
+        let first_curved = curved_texture(&mesh, 12.0, 1.0);
+        let as_first = simplify_with_errors(&mesh.indices, &first_curved, &flat);
+        assert_eq!(as_first.len(), once.len());
+        for ((a_indices, a_error, _), (b_indices, b_error, _)) in as_first.iter().zip(&once) {
+            assert_eq!(a_indices, b_indices);
+            assert!((a_error - b_error).abs() <= 1.0e-6 * a_error.max(1.0e-6));
+        }
+    }
+
+    #[test]
     fn texture_coordinates_on_a_line_are_measured_by_the_size_of_the_mesh() {
         // The coordinates cover no area of the texture (all on a line): no length a unit of them covers
         // can be found from the areas, and the size of the mesh is the unit.
@@ -1762,6 +1854,7 @@ mod tests {
                 position,
                 normal: [0.0, 1.0, 0.0],
                 texture_coord: [(position[0] / 12.0).powi(2), 0.0],
+                second_texture_coord: None,
             })
             .collect();
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
@@ -1789,6 +1882,7 @@ mod tests {
                     position,
                     normal: [0.0, 1.0, 0.0],
                     texture_coord: [position[0] / 12.0 * times, position[2] / 12.0 * times],
+                    second_texture_coord: None,
                 })
                 .collect();
             texture_unit(&vertices, &triangles, &alive).unwrap()
@@ -1816,6 +1910,7 @@ mod tests {
                 position,
                 normal: lean(position),
                 texture_coord: [0.0, 0.0],
+                second_texture_coord: None,
             })
             .collect();
         let mut with_far = patch.clone();
@@ -1826,6 +1921,7 @@ mod tests {
                 position,
                 normal: [0.0, 1.0, 0.0],
                 texture_coord: [0.0, 0.0],
+                second_texture_coord: None,
             });
         }
         far_indices.extend([first, first + 2, first + 1]);

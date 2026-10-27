@@ -3,8 +3,11 @@
 //! It reads `.gltf` (with its `.bin` files and pictures next to it) and the single file `.glb`, and
 //! gives plain data: the triangles of every mesh, the materials, where the pictures are, where each
 //! node puts each mesh in the world (with what makes a material a glass: `KHR_materials_transmission`,
-//! `KHR_materials_ior` and `KHR_materials_volume`; `KHR_materials_specular`; and how strong what it gives off is,
-//! `KHR_materials_emissive_strength`), the scene's lights
+//! `KHR_materials_ior` and `KHR_materials_volume`; `KHR_materials_specular`; how strong what it gives off is,
+//! `KHR_materials_emissive_strength`; whether it is lit at all, `KHR_materials_unlit`; and the clear layer over it, the
+//! sheen of cloth and the stretched highlight of brushed metal, `KHR_materials_clearcoat`, `KHR_materials_sheen` and
+//! `KHR_materials_anisotropy`, which the `gltf` crate does not know and this reads from the material's JSON), the scene's
+//! lights
 //! (`KHR_lights_punctual`), cameras and the
 //! nodes that carry properties of their own (glTF's `extras`: Blender's custom properties), and what
 //! a skinned mesh needs: the nodes as a hierarchy, the skins (the joints and their inverse bind
@@ -81,6 +84,10 @@ pub struct GltfPrimitive {
     pub normals: Option<Vec<[f32; 3]>>,
     /// The first set of texture coordinates, `v` growing **down** the picture (as glTF has it).
     pub uvs: Option<Vec<[f32; 2]>>,
+    /// The sets after the first (`TEXCOORD_1`, `TEXCOORD_2`, ...: set `n` is `extra_uvs[n - 1]`), the same way round;
+    /// empty if the file has only the first. A map says which set it reads ([`TextureRef::tex_coord`]); a file often
+    /// has copies of the first set here, which the caller may tell apart.
+    pub extra_uvs: Vec<Vec<[f32; 2]>>,
     /// Tangent (xyz) and the handedness of the bitangent (w, 1 or -1).
     pub tangents: Option<Vec<[f32; 4]>>,
     /// The first set of vertex colours (`COLOR_0`), red, green, blue and alpha from 0 to 1 (an RGB
@@ -395,6 +402,9 @@ pub struct GltfMaterial {
     /// How many times brighter than `emissive_factor` says the surface glows (`KHR_materials_emissive_strength`: 1
     /// where the file does not say, and not held to 1): what it gives off is the picture times the factor times this.
     pub emissive_strength: f32,
+    /// The surface is its base colour whatever lights it (`KHR_materials_unlit`): what a renderer draws of it is the
+    /// base colour (its factor, its picture and its alpha) and nothing else of the material.
+    pub unlit: bool,
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
@@ -422,6 +432,34 @@ pub struct GltfMaterial {
     /// curve).
     pub specular_color_factor: [f32; 3],
     pub specular_color: Option<TextureRef>,
+    /// How strong the clear layer over the surface is, 0 to 1 (`KHR_materials_clearcoat`: 0 where the file does not say,
+    /// no layer), multiplied with the **red** channel of its picture.
+    pub clearcoat_factor: f32,
+    pub clearcoat: Option<TextureRef>,
+    /// How rough the clear layer is, 0 to 1 (0 where the file does not say), multiplied with the **green** channel of
+    /// its picture.
+    pub clearcoat_roughness_factor: f32,
+    pub clearcoat_roughness: Option<TextureRef>,
+    /// The normal map of the clear layer, and how much it bends the normal (1 where the file does not say). Without one
+    /// the layer has the surface's own normal, not bent by the material's normal map (glTF).
+    pub clearcoat_normal: Option<TextureRef>,
+    pub clearcoat_normal_scale: f32,
+    /// The colour of the sheen of cloth and velvet at grazing angles (`KHR_materials_sheen`), linear: black where the
+    /// file does not say, no sheen. Multiplied with the red, green and blue of its picture (in the sRGB curve).
+    pub sheen_color_factor: [f32; 3],
+    pub sheen_color: Option<TextureRef>,
+    /// How rough the sheen is, 0 to 1 (0 where the file does not say), multiplied with the **alpha** channel of its
+    /// picture.
+    pub sheen_roughness_factor: f32,
+    pub sheen_roughness: Option<TextureRef>,
+    /// How strongly the highlight is stretched along a direction of the surface, 0 to 1 (`KHR_materials_anisotropy`: 0
+    /// where the file does not say, none), multiplied with the **blue** channel of its picture.
+    pub anisotropy_strength: f32,
+    /// How far that direction is turned from the tangent, counter-clockwise, in radians (0 where the file does not say).
+    pub anisotropy_rotation: f32,
+    /// The picture of the direction, in the frame of the tangent (red and green, -1 to 1 stored as 0 to 1; along the
+    /// tangent without one) and of the strength (blue), linear.
+    pub anisotropy: Option<TextureRef>,
 }
 
 /// Where the bytes of a picture are.
@@ -450,8 +488,9 @@ impl GltfScene {
     /// too short, or an accessor is not what its use says.
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
-        let gltf = gltf::Gltf::open(path)
-            .map_err(|err| Error::Gltf(format!("{}: {err}", path.display())))?;
+        let bytes =
+            std::fs::read(path).map_err(|err| Error::Gltf(format!("{}: {err}", path.display())))?;
+        let gltf = open(&bytes).map_err(|err| Error::Gltf(format!("{}: {err}", path.display())))?;
         let folder = path.parent().unwrap_or_else(|| Path::new("."));
         let buffers = load_buffers(&gltf, folder)?;
         build(&gltf.document, &buffers, folder)
@@ -463,9 +502,42 @@ impl GltfScene {
     /// # Errors
     /// As [`read_from_file`](Self::read_from_file).
     pub fn read_from_slice(bytes: &[u8], folder: &Path) -> Result<Self, Error> {
-        let gltf = gltf::Gltf::from_slice(bytes).map_err(|err| Error::Gltf(err.to_string()))?;
+        let gltf = open(bytes).map_err(Error::Gltf)?;
         let buffers = load_buffers(&gltf, folder)?;
         build(&gltf.document, &buffers, folder)
+    }
+}
+
+/// The extensions this reads itself from a material's JSON (the `gltf` crate does not know them): a file that requires
+/// one of them is read, where the crate would refuse it.
+const OWN_EXTENSIONS: [&str; 3] = [
+    "KHR_materials_anisotropy",
+    "KHR_materials_clearcoat",
+    "KHR_materials_sheen",
+];
+
+/// A `.gltf` or `.glb` from memory, validated as the `gltf` crate validates it, but for an extension it does not know
+/// that is required and that this reads itself ([`OWN_EXTENSIONS`]).
+fn open(bytes: &[u8]) -> Result<gltf::Gltf, String> {
+    use gltf::json::validation::{Error as Invalid, Validate as _};
+    let gltf = gltf::Gltf::from_slice_without_validation(bytes).map_err(|err| err.to_string())?;
+    let root = gltf.document.as_json();
+    let mut errors = Vec::new();
+    root.validate(root, gltf::json::Path::new, &mut |path, error| {
+        let path = path();
+        let own = matches!(error, Invalid::Unsupported)
+            && path.as_str().starts_with("extensionsRequired")
+            && OWN_EXTENSIONS
+                .iter()
+                .any(|extension| path.as_str().ends_with(&format!("= \"{extension}\"")));
+        if !own {
+            errors.push(format!("{path}: {error}"));
+        }
+    });
+    if errors.is_empty() {
+        Ok(gltf)
+    } else {
+        Err(format!("invalid glTF: {}", errors.join("; ")))
     }
 }
 
@@ -588,7 +660,7 @@ fn build(
     }
 
     for material in document.materials() {
-        scene.materials.push(read_material(&material));
+        scene.materials.push(read_material(&material, document)?);
     }
 
     for mesh in document.meshes() {
@@ -927,14 +999,200 @@ const fn texture_ref(image: usize, tex_coord: u32) -> TextureRef {
     TextureRef { image, tex_coord }
 }
 
-fn read_material(material: &gltf::Material) -> GltfMaterial {
+/// An extension of a material that the `gltf` crate does not know ([`OWN_EXTENSIONS`]), as its JSON: what it says is
+/// read here, as the crate reads the ones it knows (a number that is not one, or a texture the file does not have, is an
+/// error; what it does not say is glTF's default).
+struct OwnExtension<'a> {
+    name: &'static str,
+    value: Option<&'a gltf::json::Value>,
+    material: &'a gltf::Material<'a>,
+    document: &'a gltf::Document,
+}
+
+impl<'a> OwnExtension<'a> {
+    fn of(
+        material: &'a gltf::Material<'a>,
+        document: &'a gltf::Document,
+        name: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            value: material.extension_value(name),
+            material,
+            document,
+        }
+    }
+
+    fn error(&self, what: &str) -> Error {
+        let material = match (self.material.name(), self.material.index()) {
+            (Some(name), _) => format!("the material {name}"),
+            (None, Some(index)) => format!("material {index}"),
+            (None, None) => "the default material".to_owned(),
+        };
+        Error::Gltf(format!("{material}: {}'s {what}", self.name))
+    }
+
+    /// The number of `key` in `object` (the extension, or a texture of it), or `default` where it does not say.
+    fn number_in(
+        &self,
+        object: Option<&gltf::json::Value>,
+        key: &str,
+        default: f32,
+    ) -> Result<f32, Error> {
+        object
+            .and_then(|object| object.get(key))
+            .map_or(Ok(default), |value| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "glTF's numbers are single floats"
+                )]
+                let number = value.as_f64().map(|number| number as f32);
+                number.ok_or_else(|| self.error(&format!("{key} is not a number")))
+            })
+    }
+
+    /// The number `key` of the extension, or `default`.
+    fn number(&self, key: &str, default: f32) -> Result<f32, Error> {
+        self.number_in(self.value, key, default)
+    }
+
+    /// The three numbers `key` of the extension (a colour), or `default`.
+    fn numbers3(&self, key: &str, default: [f32; 3]) -> Result<[f32; 3], Error> {
+        let Some(value) = self.value.and_then(|value| value.get(key)) else {
+            return Ok(default);
+        };
+        let numbers: Option<Vec<f32>> = value.as_array().and_then(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "glTF's numbers are single floats"
+                    )]
+                    let number = item.as_f64().map(|number| number as f32);
+                    number
+                })
+                .collect()
+        });
+        numbers
+            .and_then(|numbers| <[f32; 3]>::try_from(numbers).ok())
+            .ok_or_else(|| self.error(&format!("{key} is not three numbers")))
+    }
+
+    /// The texture `key` of the extension (glTF's `textureInfo`: the texture, and the set of texture coordinates), as
+    /// its picture, and its JSON (a normal map's has its scale).
+    fn texture(&self, key: &str) -> Result<Option<(TextureRef, &'a gltf::json::Value)>, Error> {
+        let Some(info) = self.value.and_then(|value| value.get(key)) else {
+            return Ok(None);
+        };
+        let index = info
+            .get("index")
+            .and_then(gltf::json::Value::as_u64)
+            .ok_or_else(|| self.error(&format!("{key} has no index of a texture")))?;
+        let texture = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.document.textures().nth(index))
+            .ok_or_else(|| {
+                self.error(&format!(
+                    "{key} names texture {index}, which the file does not have"
+                ))
+            })?;
+        let tex_coord = match info.get("texCoord") {
+            None => 0,
+            Some(set) => set
+                .as_u64()
+                .and_then(|set| u32::try_from(set).ok())
+                .ok_or_else(|| self.error(&format!("{key}'s texCoord is not a set")))?,
+        };
+        Ok(Some((
+            texture_ref(texture.source().index(), tex_coord),
+            info,
+        )))
+    }
+}
+
+/// What `KHR_materials_clearcoat` says of `material`: the strength of the layer and its picture, its roughness and its
+/// picture, and its normal map and that map's scale.
+struct Clearcoat {
+    factor: f32,
+    texture: Option<TextureRef>,
+    roughness_factor: f32,
+    roughness: Option<TextureRef>,
+    normal: Option<TextureRef>,
+    normal_scale: f32,
+}
+
+fn read_clearcoat(
+    material: &gltf::Material,
+    document: &gltf::Document,
+) -> Result<Clearcoat, Error> {
+    let extension = OwnExtension::of(material, document, "KHR_materials_clearcoat");
+    let normal = extension.texture("clearcoatNormalTexture")?;
+    Ok(Clearcoat {
+        factor: extension.number("clearcoatFactor", 0.0)?,
+        texture: extension.texture("clearcoatTexture")?.map(|(map, _)| map),
+        roughness_factor: extension.number("clearcoatRoughnessFactor", 0.0)?,
+        roughness: extension
+            .texture("clearcoatRoughnessTexture")?
+            .map(|(map, _)| map),
+        normal_scale: extension.number_in(normal.map(|(_, info)| info), "scale", 1.0)?,
+        normal: normal.map(|(map, _)| map),
+    })
+}
+
+/// What `KHR_materials_sheen` says of `material`: the sheen's colour and its picture, its roughness and its picture.
+struct Sheen {
+    color_factor: [f32; 3],
+    color: Option<TextureRef>,
+    roughness_factor: f32,
+    roughness: Option<TextureRef>,
+}
+
+fn read_sheen(material: &gltf::Material, document: &gltf::Document) -> Result<Sheen, Error> {
+    let extension = OwnExtension::of(material, document, "KHR_materials_sheen");
+    Ok(Sheen {
+        color_factor: extension.numbers3("sheenColorFactor", [0.0; 3])?,
+        color: extension.texture("sheenColorTexture")?.map(|(map, _)| map),
+        roughness_factor: extension.number("sheenRoughnessFactor", 0.0)?,
+        roughness: extension
+            .texture("sheenRoughnessTexture")?
+            .map(|(map, _)| map),
+    })
+}
+
+/// What `KHR_materials_anisotropy` says of `material`: the strength, the turn and the picture.
+struct Anisotropy {
+    strength: f32,
+    rotation: f32,
+    texture: Option<TextureRef>,
+}
+
+fn read_anisotropy(
+    material: &gltf::Material,
+    document: &gltf::Document,
+) -> Result<Anisotropy, Error> {
+    let extension = OwnExtension::of(material, document, "KHR_materials_anisotropy");
+    Ok(Anisotropy {
+        strength: extension.number("anisotropyStrength", 0.0)?,
+        rotation: extension.number("anisotropyRotation", 0.0)?,
+        texture: extension.texture("anisotropyTexture")?.map(|(map, _)| map),
+    })
+}
+
+fn read_material(
+    material: &gltf::Material,
+    document: &gltf::Document,
+) -> Result<GltfMaterial, Error> {
+    let clearcoat = read_clearcoat(material, document)?;
+    let sheen = read_sheen(material, document)?;
+    let anisotropy = read_anisotropy(material, document)?;
     let pbr = material.pbr_metallic_roughness();
     let normal = material.normal_texture();
     let occlusion = material.occlusion_texture();
     let transmission = material.transmission();
     let volume = material.volume();
     let specular = material.specular();
-    GltfMaterial {
+    Ok(GltfMaterial {
         name: material.name().map(str::to_owned),
         base_color_factor: pbr.base_color_factor(),
         base_color: pbr
@@ -959,6 +1217,7 @@ fn read_material(material: &gltf::Material) -> GltfMaterial {
             .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
         emissive_factor: material.emissive_factor(),
         emissive_strength: material.emissive_strength().unwrap_or(1.0),
+        unlit: material.unlit(),
         alpha_mode: match material.alpha_mode() {
             gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
             gltf::material::AlphaMode::Mask => AlphaMode::Mask,
@@ -1000,7 +1259,20 @@ fn read_material(material: &gltf::Material) -> GltfMaterial {
             .as_ref()
             .and_then(gltf::material::Specular::specular_color_texture)
             .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
-    }
+        clearcoat_factor: clearcoat.factor,
+        clearcoat: clearcoat.texture,
+        clearcoat_roughness_factor: clearcoat.roughness_factor,
+        clearcoat_roughness: clearcoat.roughness,
+        clearcoat_normal: clearcoat.normal,
+        clearcoat_normal_scale: clearcoat.normal_scale,
+        sheen_color_factor: sheen.color_factor,
+        sheen_color: sheen.color,
+        sheen_roughness_factor: sheen.roughness_factor,
+        sheen_roughness: sheen.roughness,
+        anisotropy_strength: anisotropy.strength,
+        anisotropy_rotation: anisotropy.rotation,
+        anisotropy: anisotropy.texture,
+    })
 }
 
 /// The triangles of a primitive, or `None` if it is not made of triangles.
@@ -1027,6 +1299,14 @@ fn read_primitive(
     let uvs: Option<Vec<[f32; 2]>> = reader
         .read_tex_coords(0)
         .map(|uvs| uvs.into_f32().collect());
+    // glTF numbers the sets from 0 with no gaps: the first one the file does not have is the end.
+    let mut extra_uvs: Vec<Vec<[f32; 2]>> = Vec::new();
+    while let Some(set) = u32::try_from(extra_uvs.len() + 1)
+        .ok()
+        .and_then(|set| reader.read_tex_coords(set))
+    {
+        extra_uvs.push(set.into_f32().collect());
+    }
     let tangents: Option<Vec<[f32; 4]>> = reader.read_tangents().map(Iterator::collect);
     let colors: Option<Vec<[f32; 4]>> = reader
         .read_colors(0)
@@ -1038,7 +1318,13 @@ fn read_primitive(
         ("texture coordinates", uvs.as_ref().map(Vec::len)),
         ("tangents", tangents.as_ref().map(Vec::len)),
         ("colours", colors.as_ref().map(Vec::len)),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        extra_uvs
+            .iter()
+            .map(|set| ("texture coordinates of a later set", Some(set.len()))),
+    ) {
         if len.is_some_and(|len| len != count) {
             return Err(Error::Gltf(format!(
                 "a primitive with {count} positions and {} {name}",
@@ -1070,6 +1356,7 @@ fn read_primitive(
         positions,
         normals,
         uvs,
+        extra_uvs,
         tangents,
         colors,
         indices,
@@ -1365,6 +1652,148 @@ mod tests {
         assert_eq!(plain.specular_color, None);
     }
 
+    /// A material with what `KHR_materials_clearcoat` says, each with a picture (the textures name the pictures the other
+    /// way round, so that a texture's picture is not its own number), and a plain one.
+    const CLEARCOAT: &str = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_clearcoat"],
+  "images": [{"uri": "coat.png"}, {"uri": "coat_roughness.png"}, {"uri": "coat_normal.png"}],
+  "textures": [{"source": 2}, {"source": 1}, {"source": 0}],
+  "materials": [
+    {"name": "varnished", "extensions": {"KHR_materials_clearcoat": {
+      "clearcoatFactor": 0.75, "clearcoatTexture": {"index": 2},
+      "clearcoatRoughnessFactor": 0.25, "clearcoatRoughnessTexture": {"index": 1, "texCoord": 1},
+      "clearcoatNormalTexture": {"index": 0, "scale": 0.5}}}},
+    {"name": "plain"}
+  ]
+}"#;
+
+    #[test]
+    fn a_clearcoat_material_has_its_layer_and_a_plain_one_none() {
+        let folder =
+            std::env::temp_dir().join(format!("polypath_clearcoat_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["coat.png", "coat_roughness.png", "coat_normal.png"] {
+            std::fs::write(folder.join(name), [0_u8]).unwrap();
+        }
+        let scene = GltfScene::read_from_slice(CLEARCOAT.as_bytes(), &folder).unwrap();
+        let _ = std::fs::remove_dir_all(&folder);
+
+        let varnished = &scene.materials[0];
+        assert!((varnished.clearcoat_factor - 0.75).abs() < 1e-6);
+        assert_eq!(varnished.clearcoat.map(|map| map.image), Some(0));
+        assert!((varnished.clearcoat_roughness_factor - 0.25).abs() < 1e-6);
+        assert_eq!(
+            varnished
+                .clearcoat_roughness
+                .map(|map| (map.image, map.tex_coord)),
+            Some((1, 1))
+        );
+        assert_eq!(varnished.clearcoat_normal.map(|map| map.image), Some(2));
+        assert!((varnished.clearcoat_normal_scale - 0.5).abs() < 1e-6);
+
+        let plain = &scene.materials[1];
+        assert_eq!(plain.clearcoat_factor, 0.0);
+        assert_eq!(plain.clearcoat, None);
+        assert_eq!(plain.clearcoat_roughness_factor, 0.0);
+        assert_eq!(plain.clearcoat_roughness, None);
+        assert_eq!(plain.clearcoat_normal, None);
+        assert_eq!(plain.clearcoat_normal_scale, 1.0);
+    }
+
+    #[test]
+    fn a_clearcoat_that_names_a_texture_the_file_does_not_have_or_a_number_that_is_not_one_is_an_error()
+     {
+        let with = |clearcoat: &str| {
+            format!(
+                r#"{{"asset": {{"version": "2.0"}}, "extensionsUsed": ["KHR_materials_clearcoat"],
+  "images": [{{"uri": "data:image/png;base64,AA=="}}], "textures": [{{"source": 0}}],
+  "materials": [{{"name": "varnished", "extensions": {{"KHR_materials_clearcoat": {clearcoat}}}}}]}}"#
+            )
+        };
+        for (clearcoat, says) in [
+            (r#"{"clearcoatTexture": {"index": 3}}"#, "names texture 3"),
+            (
+                r#"{"clearcoatFactor": "much"}"#,
+                "clearcoatFactor is not a number",
+            ),
+            (
+                r#"{"clearcoatNormalTexture": {"index": 0, "scale": [1]}}"#,
+                "scale is not a number",
+            ),
+            (r#"{"clearcoatRoughnessTexture": {}}"#, "has no index"),
+        ] {
+            let read = GltfScene::read_from_slice(with(clearcoat).as_bytes(), Path::new("."));
+            assert!(
+                matches!(&read, Err(Error::Gltf(message)) if message.contains("varnished") && message.contains(says)),
+                "{clearcoat}: {read:?}"
+            );
+        }
+    }
+
+    /// A material with what `KHR_materials_sheen` says, each with a picture, and a plain one.
+    const SHEEN: &str = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_sheen"],
+  "images": [{"uri": "data:image/png;base64,AA=="}, {"uri": "data:image/png;base64,AA=="}],
+  "textures": [{"source": 1}, {"source": 0}],
+  "materials": [
+    {"name": "velvet", "extensions": {"KHR_materials_sheen": {
+      "sheenColorFactor": [1.0, 0.5, 0.25], "sheenColorTexture": {"index": 0},
+      "sheenRoughnessFactor": 0.75, "sheenRoughnessTexture": {"index": 1, "texCoord": 1}}}},
+    {"name": "plain"}
+  ]
+}"#;
+
+    #[test]
+    fn a_sheen_material_has_its_colour_and_roughness_and_a_plain_one_none() {
+        let scene = GltfScene::read_from_slice(SHEEN.as_bytes(), Path::new(".")).unwrap();
+        let velvet = &scene.materials[0];
+        assert!(close(velvet.sheen_color_factor, [1.0, 0.5, 0.25]));
+        assert_eq!(velvet.sheen_color.map(|map| map.image), Some(1));
+        assert!((velvet.sheen_roughness_factor - 0.75).abs() < 1e-6);
+        assert_eq!(
+            velvet.sheen_roughness.map(|map| (map.image, map.tex_coord)),
+            Some((0, 1))
+        );
+        let plain = &scene.materials[1];
+        assert_eq!(plain.sheen_color_factor, [0.0; 3]);
+        assert_eq!(plain.sheen_color, None);
+        assert_eq!(plain.sheen_roughness_factor, 0.0);
+        assert_eq!(plain.sheen_roughness, None);
+        // A colour that is not three numbers is an error.
+        let broken = SHEEN.replace("[1.0, 0.5, 0.25]", "[1.0, 0.5]");
+        let read = GltfScene::read_from_slice(broken.as_bytes(), Path::new("."));
+        assert!(
+            matches!(&read, Err(Error::Gltf(message)) if message.contains("sheenColorFactor is not three numbers")),
+            "{read:?}"
+        );
+    }
+
+    #[test]
+    fn an_anisotropic_material_has_its_strength_turn_and_picture_and_a_plain_one_none() {
+        let file = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_anisotropy"],
+  "images": [{"uri": "data:image/png;base64,AA=="}, {"uri": "data:image/png;base64,AA=="}],
+  "textures": [{"source": 1}, {"source": 0}],
+  "materials": [
+    {"name": "brushed", "extensions": {"KHR_materials_anisotropy": {
+      "anisotropyStrength": 0.6, "anisotropyRotation": 1.5, "anisotropyTexture": {"index": 0}}}},
+    {"name": "plain"}
+  ]
+}"#;
+        let scene = GltfScene::read_from_slice(file.as_bytes(), Path::new(".")).unwrap();
+        let brushed = &scene.materials[0];
+        assert!((brushed.anisotropy_strength - 0.6).abs() < 1e-6);
+        assert!((brushed.anisotropy_rotation - 1.5).abs() < 1e-6);
+        assert_eq!(brushed.anisotropy.map(|map| map.image), Some(1));
+        let plain = &scene.materials[1];
+        assert_eq!(plain.anisotropy_strength, 0.0);
+        assert_eq!(plain.anisotropy_rotation, 0.0);
+        assert_eq!(plain.anisotropy, None);
+    }
+
     /// A material that glows four times as strong as its factor says, and a plain one.
     const EMISSIVE_STRENGTH: &str = r#"{
   "asset": {"version": "2.0"},
@@ -1375,6 +1804,46 @@ mod tests {
     {"name": "plain", "emissiveFactor": [1.0, 0.5, 0.25]}
   ]
 }"#;
+
+    #[test]
+    fn a_file_may_require_an_extension_this_reads_itself_and_not_one_it_does_not_know() {
+        let requiring = |extension: &str| {
+            format!(
+                r#"{{"asset": {{"version": "2.0"}}, "extensionsUsed": ["{extension}"], "extensionsRequired": ["{extension}"]}}"#
+            )
+        };
+        for extension in OWN_EXTENSIONS {
+            let file = requiring(extension);
+            assert!(
+                GltfScene::read_from_slice(file.as_bytes(), Path::new(".")).is_ok(),
+                "{extension}"
+            );
+        }
+        let unknown = requiring("EXT_not_an_extension");
+        let refused = GltfScene::read_from_slice(unknown.as_bytes(), Path::new("."));
+        assert!(
+            matches!(refused, Err(Error::Gltf(message)) if message.contains("EXT_not_an_extension"))
+        );
+        // What the crate refuses besides is still refused: an accessor of a buffer view that is not there.
+        let broken = r#"{"asset": {"version": "2.0"}, "accessors": [{"bufferView": 3, "componentType": 5126, "count": 1, "type": "SCALAR"}]}"#;
+        assert!(GltfScene::read_from_slice(broken.as_bytes(), Path::new(".")).is_err());
+    }
+
+    #[test]
+    fn a_material_of_khr_materials_unlit_is_unlit_and_a_plain_one_is_not() {
+        let file = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_unlit"],
+  "materials": [
+    {"name": "flat", "pbrMetallicRoughness": {"baseColorFactor": [1, 0, 0, 1]},
+     "extensions": {"KHR_materials_unlit": {}}},
+    {"name": "plain"}
+  ]
+}"#;
+        let scene = GltfScene::read_from_slice(file.as_bytes(), Path::new(".")).unwrap();
+        assert!(scene.materials[0].unlit);
+        assert!(!scene.materials[1].unlit);
+    }
 
     #[test]
     fn a_material_has_its_emissive_strength_and_a_plain_one_a_strength_of_1() {
@@ -1951,6 +2420,80 @@ mod tests {
 }}"#,
             length = data.len()
         )
+    }
+
+    /// A triangle with three sets of texture coordinates: the first, a second of its own, and a third of bytes (normalised,
+    /// as glTF allows a set to be). The second primitive has the first set alone.
+    fn three_sets_file() -> String {
+        let mut data: Vec<u8> = Vec::new();
+        for value in [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            data.extend(value.to_le_bytes());
+        }
+        for value in [
+            0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.75, 0.5, 0.5, 0.75,
+        ] {
+            data.extend(value.to_le_bytes());
+        }
+        // The third set as bytes, each pair padded to four.
+        for pair in [[0_u8, 255], [255, 0], [51, 102]] {
+            data.extend(pair);
+            data.extend([0, 0]);
+        }
+        let uri = format!(
+            "data:application/octet-stream;base64,{}",
+            base64_encode(&data)
+        );
+        format!(
+            r#"{{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [{{"name": "tri", "mesh": 0}}],
+  "meshes": [{{"primitives": [
+    {{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1, "TEXCOORD_1": 2, "TEXCOORD_2": 3}}}},
+    {{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1}}}}
+  ]}}],
+  "buffers": [{{"byteLength": {length}, "uri": "{uri}"}}],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": 36, "byteLength": 48}},
+    {{"buffer": 0, "byteOffset": 84, "byteLength": 12, "byteStride": 4}}
+  ],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0]}},
+    {{"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"}},
+    {{"bufferView": 1, "byteOffset": 24, "componentType": 5126, "count": 3, "type": "VEC2"}},
+    {{"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"}}
+  ]
+}}"#,
+            length = data.len()
+        )
+    }
+
+    #[test]
+    fn every_set_of_texture_coordinates_is_read_in_its_order() {
+        let scene =
+            GltfScene::read_from_slice(three_sets_file().as_bytes(), Path::new(".")).unwrap();
+        let three = &scene.meshes[0].primitives[0];
+        assert_eq!(
+            three.uvs.as_deref(),
+            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]][..])
+        );
+        assert_eq!(three.extra_uvs.len(), 2);
+        assert_eq!(three.extra_uvs[0], [[0.5, 0.5], [0.75, 0.5], [0.5, 0.75]]);
+        let bytes = &three.extra_uvs[1];
+        let wanted = [[0.0, 1.0], [1.0, 0.0], [0.2, 0.4]];
+        for (got, wanted) in bytes.iter().zip(wanted) {
+            assert!(
+                (got[0] - wanted[0]).abs() < 1e-6 && (got[1] - wanted[1]).abs() < 1e-6,
+                "{got:?}"
+            );
+        }
+        // A primitive with the first set alone has none after it.
+        assert_eq!(
+            scene.meshes[0].primitives[1].extra_uvs,
+            Vec::<Vec<[f32; 2]>>::new()
+        );
     }
 
     #[test]

@@ -92,6 +92,12 @@ pub fn content_key<V: Vertex>(indices: &[u32], vertices: &[V], recipe: &Recipe) 
         } else {
             hasher.write_u8(0);
         }
+        // A second set only where there is one: the key of a mesh without stays what it was (its baked levels too).
+        if let Some((u, v)) = vertex.second_texture_coord() {
+            hasher.write_u8(2);
+            hasher.write_u32(u.to_bits());
+            hasher.write_u32(v.to_bits());
+        }
     }
     hasher.finish()
 }
