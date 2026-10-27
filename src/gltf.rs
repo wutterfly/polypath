@@ -29,7 +29,7 @@
 //!
 //! Not read (yet): morph targets (and the channels of an animation that move their weights, which
 //! are counted in [`GltfScene::skipped_channels`]), sparse accessors beyond what the `gltf` crate
-//! resolves itself, texture samplers and `KHR_texture_transform`. Meshes that are points or lines are
+//! resolves itself, and `KHR_texture_transform`. Meshes that are points or lines are
 //! left out (and counted in [`GltfScene::skipped_primitives`]).
 
 use std::path::{Path, PathBuf};
@@ -357,13 +357,62 @@ pub fn property<'a>(properties: &'a [(String, ExtraValue)], key: &str) -> Option
         .map(|(_, value)| value)
 }
 
-/// A picture a material uses, and which texture coordinates it is read with.
+/// A picture a material uses, which texture coordinates it is read with, and how (its texture's sampler).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureRef {
     /// The number of the picture in [`GltfScene::images`].
     pub image: usize,
     /// Which set of texture coordinates (0 is the first).
     pub tex_coord: u32,
+    /// How the picture is read: its texture's sampler (glTF's default where the texture names none).
+    pub sampler: GltfSampler,
+}
+
+/// How a texture is read (glTF's sampler).
+///
+/// What is outside 0 to 1 along each axis, and how a texel is taken where the picture is bigger on the screen than it is
+/// and where it is smaller. A filter the file does not say is the viewer's to choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct GltfSampler {
+    /// Along `u` (glTF's `wrapS`).
+    pub wrap_s: Wrap,
+    /// Along `v` (glTF's `wrapT`).
+    pub wrap_t: Wrap,
+    /// Where the picture is magnified (glTF's `magFilter`).
+    pub mag_filter: Option<Filter>,
+    /// Where it is minified (glTF's `minFilter`).
+    pub min_filter: Option<MinFilter>,
+}
+
+/// What a picture is outside 0 to 1 along an axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Wrap {
+    /// It starts again (glTF's `REPEAT`, its default).
+    #[default]
+    Repeat,
+    /// It starts again mirrored, every other time (`MIRRORED_REPEAT`).
+    MirroredRepeat,
+    /// The texel at the edge (`CLAMP_TO_EDGE`).
+    ClampToEdge,
+}
+
+/// How a texel is taken between the texels of a picture, or between two of its mip levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Filter {
+    /// The nearest one (`NEAREST`): the texels show as squares.
+    Nearest,
+    /// A blend of the nearest ones (`LINEAR`).
+    Linear,
+}
+
+/// glTF's `minFilter`: how a texel is taken within a level, and from which mip levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MinFilter {
+    /// Within a level.
+    pub filter: Filter,
+    /// Between levels: from the nearest (`Nearest`) or blended between two (`Linear`); `None` reads the first level
+    /// alone (glTF's `NEAREST` and `LINEAR`, which have no mip levels).
+    pub mip: Option<Filter>,
 }
 
 /// How a material takes the alpha of what it draws.
@@ -995,8 +1044,40 @@ fn properties(extras: &gltf::json::Extras) -> Vec<(String, ExtraValue)> {
     }
 }
 
-const fn texture_ref(image: usize, tex_coord: u32) -> TextureRef {
-    TextureRef { image, tex_coord }
+/// The picture of `texture`, read with the set `tex_coord` and its sampler.
+fn texture_ref(texture: &gltf::Texture<'_>, tex_coord: u32) -> TextureRef {
+    TextureRef {
+        image: texture.source().index(),
+        tex_coord,
+        sampler: sampler_of(&texture.sampler()),
+    }
+}
+
+/// What glTF's `sampler` says.
+fn sampler_of(sampler: &gltf::texture::Sampler<'_>) -> GltfSampler {
+    use gltf::texture::{MagFilter, MinFilter as Min, WrappingMode};
+    let wrap = |mode| match mode {
+        WrappingMode::Repeat => Wrap::Repeat,
+        WrappingMode::MirroredRepeat => Wrap::MirroredRepeat,
+        WrappingMode::ClampToEdge => Wrap::ClampToEdge,
+    };
+    let min = |filter, mip| MinFilter { filter, mip };
+    GltfSampler {
+        wrap_s: wrap(sampler.wrap_s()),
+        wrap_t: wrap(sampler.wrap_t()),
+        mag_filter: sampler.mag_filter().map(|filter| match filter {
+            MagFilter::Nearest => Filter::Nearest,
+            MagFilter::Linear => Filter::Linear,
+        }),
+        min_filter: sampler.min_filter().map(|filter| match filter {
+            Min::Nearest => min(Filter::Nearest, None),
+            Min::Linear => min(Filter::Linear, None),
+            Min::NearestMipmapNearest => min(Filter::Nearest, Some(Filter::Nearest)),
+            Min::LinearMipmapNearest => min(Filter::Linear, Some(Filter::Nearest)),
+            Min::NearestMipmapLinear => min(Filter::Nearest, Some(Filter::Linear)),
+            Min::LinearMipmapLinear => min(Filter::Linear, Some(Filter::Linear)),
+        }),
+    }
 }
 
 /// An extension of a material that the `gltf` crate does not know ([`OWN_EXTENSIONS`]), as its JSON: what it says is
@@ -1104,10 +1185,7 @@ impl<'a> OwnExtension<'a> {
                 .and_then(|set| u32::try_from(set).ok())
                 .ok_or_else(|| self.error(&format!("{key}'s texCoord is not a set")))?,
         };
-        Ok(Some((
-            texture_ref(texture.source().index(), tex_coord),
-            info,
-        )))
+        Ok(Some((texture_ref(&texture, tex_coord), info)))
     }
 }
 
@@ -1197,24 +1275,23 @@ fn read_material(
         base_color_factor: pbr.base_color_factor(),
         base_color: pbr
             .base_color_texture()
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+            .map(|info| texture_ref(&info.texture(), info.tex_coord())),
         metallic_factor: pbr.metallic_factor(),
         roughness_factor: pbr.roughness_factor(),
         metallic_roughness: pbr
             .metallic_roughness_texture()
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+            .map(|info| texture_ref(&info.texture(), info.tex_coord())),
         normal_scale: normal
             .as_ref()
             .map_or(1.0, gltf::material::NormalTexture::scale),
-        normal: normal.map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+        normal: normal.map(|info| texture_ref(&info.texture(), info.tex_coord())),
         occlusion_strength: occlusion
             .as_ref()
             .map_or(1.0, gltf::material::OcclusionTexture::strength),
-        occlusion: occlusion
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+        occlusion: occlusion.map(|info| texture_ref(&info.texture(), info.tex_coord())),
         emissive: material
             .emissive_texture()
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+            .map(|info| texture_ref(&info.texture(), info.tex_coord())),
         emissive_factor: material.emissive_factor(),
         emissive_strength: material.emissive_strength().unwrap_or(1.0),
         unlit: material.unlit(),
@@ -1230,7 +1307,7 @@ fn read_material(
             .map_or(0.0, gltf::material::Transmission::transmission_factor),
         transmission: transmission
             .and_then(|transmission| transmission.transmission_texture())
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+            .map(|info| texture_ref(&info.texture(), info.tex_coord())),
         ior: material.ior().unwrap_or(1.5),
         thickness_factor: volume
             .as_ref()
@@ -1238,7 +1315,7 @@ fn read_material(
         thickness: volume
             .as_ref()
             .and_then(gltf::material::Volume::thickness_texture)
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+            .map(|info| texture_ref(&info.texture(), info.tex_coord())),
         attenuation_distance: volume
             .as_ref()
             .map_or(f32::INFINITY, gltf::material::Volume::attenuation_distance),
@@ -1251,14 +1328,14 @@ fn read_material(
         specular: specular
             .as_ref()
             .and_then(gltf::material::Specular::specular_texture)
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+            .map(|info| texture_ref(&info.texture(), info.tex_coord())),
         specular_color_factor: specular
             .as_ref()
             .map_or([1.0; 3], gltf::material::Specular::specular_color_factor),
         specular_color: specular
             .as_ref()
             .and_then(gltf::material::Specular::specular_color_texture)
-            .map(|info| texture_ref(info.texture().source().index(), info.tex_coord())),
+            .map(|info| texture_ref(&info.texture(), info.tex_coord())),
         clearcoat_factor: clearcoat.factor,
         clearcoat: clearcoat.texture,
         clearcoat_roughness_factor: clearcoat.roughness_factor,
@@ -1667,6 +1744,74 @@ mod tests {
     {"name": "plain"}
   ]
 }"#;
+
+    /// Four samplers (each wrap, every filter, none said) and a texture without one, read by the core's base colour and
+    /// by an extension the crate does not know (the clear coat).
+    const SAMPLERS: &str = r#"{
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_clearcoat"],
+  "images": [{"uri": "data:image/png;base64,AA=="}],
+  "samplers": [
+    {"wrapS": 33071, "wrapT": 33648, "magFilter": 9728, "minFilter": 9986},
+    {"magFilter": 9729, "minFilter": 9729},
+    {"wrapT": 33071, "minFilter": 9984},
+    {}
+  ],
+  "textures": [{"source": 0, "sampler": 0}, {"source": 0, "sampler": 1}, {"source": 0, "sampler": 2},
+    {"source": 0, "sampler": 3}, {"source": 0}],
+  "materials": [
+    {"name": "clamped", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+      "extensions": {"KHR_materials_clearcoat": {"clearcoatTexture": {"index": 2}}}},
+    {"name": "blended", "pbrMetallicRoughness": {"baseColorTexture": {"index": 1}}},
+    {"name": "unsaid", "pbrMetallicRoughness": {"baseColorTexture": {"index": 3}}},
+    {"name": "none", "pbrMetallicRoughness": {"baseColorTexture": {"index": 4}}}
+  ]
+}"#;
+
+    #[test]
+    fn a_texture_is_read_with_its_sampler_by_the_core_and_by_an_extension() {
+        let scene = GltfScene::read_from_slice(SAMPLERS.as_bytes(), Path::new(".")).unwrap();
+        let sampler = |material: usize| scene.materials[material].base_color.unwrap().sampler;
+
+        assert_eq!(
+            sampler(0),
+            GltfSampler {
+                wrap_s: Wrap::ClampToEdge,
+                wrap_t: Wrap::MirroredRepeat,
+                mag_filter: Some(Filter::Nearest),
+                min_filter: Some(MinFilter {
+                    filter: Filter::Nearest,
+                    mip: Some(Filter::Linear),
+                }),
+            }
+        );
+        // Minified without mip levels.
+        assert_eq!(
+            sampler(1).min_filter,
+            Some(MinFilter {
+                filter: Filter::Linear,
+                mip: None,
+            })
+        );
+        assert_eq!(sampler(1).mag_filter, Some(Filter::Linear));
+        // A sampler that says nothing, and a texture without one: repeat, and the filters the viewer's.
+        assert_eq!(sampler(2), GltfSampler::default());
+        assert_eq!(sampler(3), GltfSampler::default());
+        assert_eq!(sampler(3).wrap_s, Wrap::Repeat);
+        // The clear coat's texture, which the crate does not read, has its sampler too.
+        assert_eq!(
+            scene.materials[0].clearcoat.unwrap().sampler,
+            GltfSampler {
+                wrap_s: Wrap::Repeat,
+                wrap_t: Wrap::ClampToEdge,
+                mag_filter: None,
+                min_filter: Some(MinFilter {
+                    filter: Filter::Nearest,
+                    mip: Some(Filter::Nearest),
+                }),
+            }
+        );
+    }
 
     #[test]
     fn a_clearcoat_material_has_its_layer_and_a_plain_one_none() {
