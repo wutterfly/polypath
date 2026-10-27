@@ -9,7 +9,8 @@
 //! `KHR_materials_anisotropy`, which the `gltf` crate does not know and this reads from the material's JSON), the scene's
 //! lights
 //! (`KHR_lights_punctual`), cameras and the
-//! nodes that carry properties of their own (glTF's `extras`: Blender's custom properties), and what
+//! nodes that carry properties of their own (glTF's `extras`: Blender's custom properties), the numbers a
+//! program gives the vertices for its own use (glTF's attributes whose names start with an underscore), and what
 //! a skinned mesh needs: the nodes as a hierarchy, the skins (the joints and their inverse bind
 //! matrices), the joints and weights of every vertex, and the animations (the keys of each moved
 //! node's translation, rotation and scale). Playing an animation is the caller's.
@@ -91,9 +92,14 @@ pub struct GltfPrimitive {
     /// Tangent (xyz) and the handedness of the bitangent (w, 1 or -1).
     pub tangents: Option<Vec<[f32; 4]>>,
     /// The first set of vertex colours (`COLOR_0`), red, green, blue and alpha from 0 to 1 (an RGB
-    /// colour has an alpha of 1), as the file has them: linear numbers, which a program may use for
-    /// something other than a colour. `None` if the file has none.
+    /// colour has an alpha of 1), linear as the file has them: a colour, which glTF multiplies into the
+    /// base colour (numbers of a program's own are in [`attributes`](Self::attributes)). `None` if the
+    /// file has none.
     pub colors: Option<Vec<[f32; 4]>>,
+    /// The attributes of the application (glTF's attributes whose names start with an underscore, as
+    /// `_WIND`): numbers a program gives the vertices for its own use, which glTF gives no meaning. In
+    /// the order of their names; empty if the file has none. [`attribute`](Self::attribute) finds one.
+    pub attributes: Vec<GltfAttribute>,
     /// Three for each triangle, counter clockwise when seen from the front.
     pub indices: Vec<u32>,
     /// The number of its material in [`GltfScene::materials`], `None` for the default one.
@@ -107,6 +113,31 @@ pub struct GltfPrimitive {
     /// scaled to, as its rounding or the four that were kept may not; a vertex with no weight at all
     /// follows its first joint). `None` if the mesh is not skinned.
     pub weights: Option<Vec<[f32; 4]>>,
+}
+
+impl GltfPrimitive {
+    /// The attribute of the application named `name`, the underscore included (`"_WIND"`), if the
+    /// primitive has it.
+    #[must_use]
+    pub fn attribute(&self, name: &str) -> Option<&GltfAttribute> {
+        self.attributes
+            .iter()
+            .find(|attribute| attribute.name == name)
+    }
+}
+
+/// An attribute of the application on the vertices of a primitive: up to four numbers for each.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GltfAttribute {
+    /// Its name as the file has it, the underscore included (`_WIND`).
+    pub name: String,
+    /// How many numbers each vertex has: 1 to 4 (glTF's `SCALAR` to `VEC4`; an attribute of
+    /// matrices is left out).
+    pub components: u8,
+    /// The numbers of each vertex, 0 past [`components`](Self::components). Integers the file marks
+    /// normalised are as glTF reads them (unsigned from 0 to 1, signed from -1 to 1), others are their
+    /// values.
+    pub values: Vec<[f32; 4]>,
 }
 
 /// A use of a mesh in the scene.
@@ -1411,6 +1442,7 @@ fn read_primitive(
     }
 
     let (joints, weights) = read_influences(&reader, count)?;
+    let attributes = read_attributes(primitive, buffers, count)?;
 
     let listed: Vec<u32> = match reader.read_indices() {
         Some(indices) => indices.into_u32().collect(),
@@ -1436,11 +1468,153 @@ fn read_primitive(
         extra_uvs,
         tangents,
         colors,
+        attributes,
         indices,
         material: primitive.material().index(),
         joints,
         weights,
     }))
+}
+
+/// The attributes of the application of a primitive of `count` vertices (names that start with an
+/// underscore), in the order of their names. An attribute of matrices is left out.
+fn read_attributes(
+    primitive: &gltf::Primitive,
+    buffers: &[Vec<u8>],
+    count: usize,
+) -> Result<Vec<GltfAttribute>, Error> {
+    use gltf::accessor::{DataType, Dimensions};
+    use gltf::mesh::Semantic;
+
+    let get = |buffer: gltf::Buffer| buffers.get(buffer.index()).map(Vec::as_slice);
+    let mut attributes = Vec::new();
+    for (semantic, accessor) in primitive.attributes() {
+        let Semantic::Extras(name) = semantic else {
+            continue;
+        };
+        let components = match accessor.dimensions() {
+            Dimensions::Scalar => 1,
+            Dimensions::Vec2 => 2,
+            Dimensions::Vec3 => 3,
+            Dimensions::Vec4 => 4,
+            Dimensions::Mat2 | Dimensions::Mat3 | Dimensions::Mat4 => continue,
+        };
+        let values = match accessor.data_type() {
+            DataType::I8 => read_numbers::<i8, _>(accessor, get, components),
+            DataType::U8 => read_numbers::<u8, _>(accessor, get, components),
+            DataType::I16 => read_numbers::<i16, _>(accessor, get, components),
+            DataType::U16 => read_numbers::<u16, _>(accessor, get, components),
+            DataType::U32 => read_numbers::<u32, _>(accessor, get, components),
+            DataType::F32 => read_numbers::<f32, _>(accessor, get, components),
+        }
+        .ok_or_else(|| Error::Gltf(format!("the attribute _{name} can not be read")))?;
+        if values.len() != count {
+            return Err(Error::Gltf(format!(
+                "a primitive with {count} positions and {} values of _{name}",
+                values.len()
+            )));
+        }
+        attributes.push(GltfAttribute {
+            name: format!("_{name}"),
+            components,
+            values,
+        });
+    }
+    Ok(attributes)
+}
+
+/// The elements of `accessor`, each `components` numbers of type `N` (1 to 4), as four floats (0 past
+/// `components`), normalised as the accessor says. `None` if its data is not in the buffers.
+fn read_numbers<'a, 's, N, F>(
+    accessor: gltf::Accessor<'a>,
+    get: F,
+    components: u8,
+) -> Option<Vec<[f32; 4]>>
+where
+    N: Number,
+    F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
+{
+    use gltf::accessor::Iter;
+
+    let normalized = accessor.normalized();
+    let float = |number: N| number.to_f32(normalized);
+    Some(match components {
+        1 => Iter::<N>::new(accessor, get)?
+            .map(|x| [float(x), 0.0, 0.0, 0.0])
+            .collect(),
+        2 => Iter::<[N; 2]>::new(accessor, get)?
+            .map(|[x, y]| [float(x), float(y), 0.0, 0.0])
+            .collect(),
+        3 => Iter::<[N; 3]>::new(accessor, get)?
+            .map(|[x, y, z]| [float(x), float(y), float(z), 0.0])
+            .collect(),
+        _ => Iter::<[N; 4]>::new(accessor, get)?
+            .map(|numbers| numbers.map(float))
+            .collect(),
+    })
+}
+
+/// A type of the numbers of an accessor, read as a float: a normalised integer as glTF has it
+/// (unsigned from 0 to 1, signed from -1 to 1, the smallest signed one -1 as well), any other as its
+/// value.
+trait Number: gltf::accessor::Item + Copy {
+    fn to_f32(self, normalized: bool) -> f32;
+}
+
+impl Number for f32 {
+    fn to_f32(self, _normalized: bool) -> f32 {
+        self
+    }
+}
+
+impl Number for u8 {
+    fn to_f32(self, normalized: bool) -> f32 {
+        if normalized {
+            f32::from(self) / f32::from(Self::MAX)
+        } else {
+            f32::from(self)
+        }
+    }
+}
+
+impl Number for u16 {
+    fn to_f32(self, normalized: bool) -> f32 {
+        if normalized {
+            f32::from(self) / f32::from(Self::MAX)
+        } else {
+            f32::from(self)
+        }
+    }
+}
+
+impl Number for i8 {
+    fn to_f32(self, normalized: bool) -> f32 {
+        if normalized {
+            (f32::from(self) / f32::from(Self::MAX)).max(-1.0)
+        } else {
+            f32::from(self)
+        }
+    }
+}
+
+impl Number for i16 {
+    fn to_f32(self, normalized: bool) -> f32 {
+        if normalized {
+            (f32::from(self) / f32::from(Self::MAX)).max(-1.0)
+        } else {
+            f32::from(self)
+        }
+    }
+}
+
+impl Number for u32 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a value past 2^24 is rounded; glTF allows no u32 in an attribute of the application, and no normalised one anywhere"
+    )]
+    fn to_f32(self, _normalized: bool) -> f32 {
+        self as f32
+    }
 }
 
 /// The joints and weights of the `count` vertices of a primitive, from every set the file has
@@ -2666,6 +2840,118 @@ mod tests {
         assert_eq!(colours.len(), 3);
         assert!((colours[0][1] - 1.0).abs() < 1e-6 && (colours[0][2] - 0.2).abs() < 1e-3);
         assert!(colours.iter().all(|colour| (colour[3] - 1.0).abs() < 1e-6));
+        // The colours are not an attribute of the application.
+        assert_eq!(
+            scene.meshes[0].primitives[0].attributes,
+            Vec::<GltfAttribute>::new()
+        );
+    }
+
+    /// A triangle with attributes of the application: `_WIND` (four floats), `_TILT` (two normalised
+    /// signed bytes, each pair padded to four), `_COUNT` (one u16, not normalised) and `_FRAME` (a 2 by 2
+    /// matrix of floats, which is left out).
+    fn attributes_file() -> String {
+        let mut data: Vec<u8> = Vec::new();
+        for value in [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            data.extend(value.to_le_bytes());
+        }
+        for value in [
+            0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.25, 0.5, 0.75, 1.0,
+        ] {
+            data.extend(value.to_le_bytes());
+        }
+        for pair in [[127_i8, -127], [-128, 0], [64, 127]] {
+            data.extend(pair.map(i8::to_le_bytes).concat());
+            data.extend([0, 0]);
+        }
+        for count in [0_u16, 7, 65535] {
+            data.extend(count.to_le_bytes());
+        }
+        data.extend([0, 0]);
+        for value in 0..12_u8 {
+            data.extend(f32::from(value).to_le_bytes());
+        }
+        let uri = format!(
+            "data:application/octet-stream;base64,{}",
+            base64_encode(&data)
+        );
+        format!(
+            r#"{{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [{{"name": "tri", "mesh": 0}}],
+  "meshes": [{{"primitives": [{{"attributes": {{"POSITION": 0, "_WIND": 1, "_TILT": 2, "_COUNT": 3, "_FRAME": 4}}}}]}}],
+  "buffers": [{{"byteLength": {length}, "uri": "{uri}"}}],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": 36, "byteLength": 48}},
+    {{"buffer": 0, "byteOffset": 84, "byteLength": 12, "byteStride": 4}},
+    {{"buffer": 0, "byteOffset": 96, "byteLength": 6}},
+    {{"buffer": 0, "byteOffset": 104, "byteLength": 48}}
+  ],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0]}},
+    {{"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC4"}},
+    {{"bufferView": 2, "componentType": 5120, "normalized": true, "count": 3, "type": "VEC2"}},
+    {{"bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR"}},
+    {{"bufferView": 4, "componentType": 5126, "count": 3, "type": "MAT2"}}
+  ]
+}}"#,
+            length = data.len()
+        )
+    }
+
+    #[test]
+    fn the_attributes_of_the_application_are_read_by_their_names() {
+        let scene =
+            GltfScene::read_from_slice(attributes_file().as_bytes(), Path::new(".")).unwrap();
+        let primitive = &scene.meshes[0].primitives[0];
+        assert!(primitive.colors.is_none());
+        // In the order of their names; the matrices left out.
+        let names: Vec<&str> = primitive
+            .attributes
+            .iter()
+            .map(|attribute| attribute.name.as_str())
+            .collect();
+        assert_eq!(names, ["_COUNT", "_TILT", "_WIND"]);
+        assert!(primitive.attribute("_FRAME").is_none());
+        assert!(primitive.attribute("WIND").is_none());
+
+        let wind = primitive.attribute("_WIND").unwrap();
+        assert_eq!(wind.components, 4);
+        assert_eq!(
+            wind.values,
+            [
+                [0.1, 0.2, 0.3, 0.4],
+                [0.5, 0.6, 0.7, 0.8],
+                [0.25, 0.5, 0.75, 1.0]
+            ]
+        );
+
+        // Normalised signed bytes: 127 is 1, -127 and -128 are -1.
+        let tilt = primitive.attribute("_TILT").unwrap();
+        assert_eq!(tilt.components, 2);
+        let wanted = [[1.0, -1.0], [-1.0, 0.0], [64.0 / 127.0, 1.0]];
+        for (got, wanted) in tilt.values.iter().zip(wanted) {
+            assert!(
+                (got[0] - wanted[0]).abs() < 1e-6 && (got[1] - wanted[1]).abs() < 1e-6,
+                "{got:?}"
+            );
+            assert_eq!(got[2..], [0.0, 0.0]);
+        }
+
+        // Integers not normalised are their values.
+        let count = primitive.attribute("_COUNT").unwrap();
+        assert_eq!(count.components, 1);
+        assert_eq!(
+            count.values,
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [7.0, 0.0, 0.0, 0.0],
+                [65535.0, 0.0, 0.0, 0.0]
+            ]
+        );
     }
 
     #[test]
