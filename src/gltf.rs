@@ -68,6 +68,8 @@ pub struct GltfScene {
     /// How many channels of the animations were left out because they move the weights of morph
     /// targets, which are not read.
     pub skipped_channels: usize,
+    /// The files it was read from, the pictures apart: the `.gltf` or `.glb`, and the buffers it refers to.
+    pub files: Vec<PathBuf>,
 }
 
 /// A mesh: one or more parts, each with its own material.
@@ -572,8 +574,11 @@ impl GltfScene {
             std::fs::read(path).map_err(|err| Error::Gltf(format!("{}: {err}", path.display())))?;
         let gltf = open(&bytes).map_err(|err| Error::Gltf(format!("{}: {err}", path.display())))?;
         let folder = path.parent().unwrap_or_else(|| Path::new("."));
-        let buffers = load_buffers(&gltf, folder)?;
-        build(&gltf.document, &buffers, folder)
+        let (buffers, mut files) = load_buffers(&gltf, folder)?;
+        files.insert(0, path.to_path_buf());
+        let mut scene = build(&gltf.document, &buffers, folder)?;
+        scene.files = files;
+        Ok(scene)
     }
 
     /// Reads a `.glb` (or a `.gltf` without files of its own) from memory. Files it refers to are
@@ -583,8 +588,10 @@ impl GltfScene {
     /// As [`read_from_file`](Self::read_from_file).
     pub fn read_from_slice(bytes: &[u8], folder: &Path) -> Result<Self, Error> {
         let gltf = open(bytes).map_err(Error::Gltf)?;
-        let buffers = load_buffers(&gltf, folder)?;
-        build(&gltf.document, &buffers, folder)
+        let (buffers, files) = load_buffers(&gltf, folder)?;
+        let mut scene = build(&gltf.document, &buffers, folder)?;
+        scene.files = files;
+        Ok(scene)
     }
 }
 
@@ -621,14 +628,20 @@ fn open(bytes: &[u8]) -> Result<gltf::Gltf, String> {
     }
 }
 
-fn load_buffers(gltf: &gltf::Gltf, folder: &Path) -> Result<Vec<Vec<u8>>, Error> {
+/// The buffers of a file, and the files they were in.
+fn load_buffers(gltf: &gltf::Gltf, folder: &Path) -> Result<(Vec<Vec<u8>>, Vec<PathBuf>), Error> {
     let mut buffers = Vec::new();
+    let mut files = Vec::new();
     for buffer in gltf.buffers() {
         let data = match buffer.source() {
             gltf::buffer::Source::Bin => gltf.blob.clone().ok_or_else(|| {
                 Error::Gltf("a buffer is in the .glb file, which has none".into())
             })?,
-            gltf::buffer::Source::Uri(uri) => read_uri(uri, folder)?.0,
+            gltf::buffer::Source::Uri(uri) => {
+                let (data, file) = read_uri(uri, folder)?;
+                files.extend(file);
+                data
+            }
         };
         if data.len() < buffer.length() {
             return Err(Error::Gltf(format!(
@@ -640,7 +653,7 @@ fn load_buffers(gltf: &gltf::Gltf, folder: &Path) -> Result<Vec<Vec<u8>>, Error>
         }
         buffers.push(data);
     }
-    Ok(buffers)
+    Ok((buffers, files))
 }
 
 /// The bytes a URI names: a `data:` URI is decoded, anything else is a path (percent-encoded)

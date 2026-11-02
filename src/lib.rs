@@ -5,7 +5,6 @@
 pub mod bounding;
 pub mod gltf;
 pub mod lod;
-pub mod lod_bake;
 pub mod meshlet;
 pub mod opt;
 pub mod tangent;
